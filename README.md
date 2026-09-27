@@ -2,7 +2,7 @@
 
 Educational / portfolio prototype — not a production security product.
 
-TrustGate is a small adaptive access-control prototype. This repository is at **Phase 1: project and repository setup**. The frontend shell and the API liveness check run locally. Authentication, the database, trust scoring, OTP, and the admin dashboard are not implemented yet.
+TrustGate is a small adaptive access-control prototype. Phase 1 is the application shell. Phase 2B adds an async PostgreSQL connection. Authentication, tables, migrations, trust scoring, OTP, and the admin dashboard are not implemented yet.
 
 ## Prerequisites
 
@@ -25,7 +25,7 @@ npm ci --prefix frontend
 
 On macOS or Linux, create the virtual environment with `python3.12 -m venv backend/.venv` and call `backend/.venv/bin/python` instead of `backend\.venv\Scripts\python`.
 
-`.env` stays on your machine. `.env.example` is the committed template. Phase 1 starts with `APP_ENV`, `CORS_ALLOWED_ORIGIN`, and `VITE_API_BASE_URL` only.
+`.env` stays on your machine. `.env.example` is the committed template. The API needs `APP_ENV` and `CORS_ALLOWED_ORIGIN`. The frontend needs `VITE_API_BASE_URL`. `DATABASE_URL` is optional for `GET /health` and required only for the database connectivity test.
 
 ## Run locally
 
@@ -60,6 +60,17 @@ curl http://127.0.0.1:8000/health
 ```
 
 Expected body: `{"status":"ok"}`. This route does not connect to a database.
+
+## Database connection
+
+Set `DATABASE_URL` in the repository-root `.env` to the Supabase direct Postgres connection string (host `db.<project-ref>.supabase.co`, port 5432). That value is backend-only. Do not commit `.env`, and do not copy the string into a `VITE_` variable.
+
+The connectivity test runs `SELECT 1` when `DATABASE_URL` is set, and skips when it is empty:
+
+```powershell
+cd backend
+.\.venv\Scripts\python -m pytest tests/test_database.py -q
+```
 
 Interactive API docs are at http://127.0.0.1:8000/docs when `APP_ENV` is not `production`.
 

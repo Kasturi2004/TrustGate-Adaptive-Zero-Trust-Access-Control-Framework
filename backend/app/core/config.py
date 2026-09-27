@@ -32,12 +32,12 @@ class Settings(BaseSettings):
     app_env: AppEnv
     cors_allowed_origin: str
 
-    # Declared so the contract from the implementation plan is visible.
-    # None of these are read in Phase 1.
+    # Supabase Auth settings. They are separate from DATABASE_URL and unused here.
     supabase_url: str | None = None
     supabase_anon_key: str | None = None
     supabase_jwt_secret: str | None = None
     supabase_service_role_key: str | None = None
+    # Async SQLAlchemy connection. Optional so GET /health can boot without a database.
     database_url: str | None = None
     migration_database_url: str | None = None
     device_hash_secret: str | None = None
