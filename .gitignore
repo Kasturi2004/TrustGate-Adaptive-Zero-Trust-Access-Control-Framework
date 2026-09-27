@@ -1,0 +1,48 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+frontend/dist-ssr/
+frontend/node_modules/
+*.tsbuildinfo
+.vite/
+.eslintcache
+
+# Local databases and generated data
+*.sqlite
+*.sqlite3
+*.db
+*.mmdb
+GeoLite2*
+
+# Caches and OS/editor noise
+.cache/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+# TrustGate specification documents
+docs/

@@ -1,0 +1,236 @@
+:root {
+  color-scheme: light;
+  --trust-primary: #1f4e79;
+  --trust-primary-deep: #173c5e;
+  --steel-secondary: #3e7ca6;
+  --page-bg: #f5f7f9;
+  --page-bg-dim: #edf0f3;
+  --surface: #ffffff;
+  --text-primary: #131a22;
+  --text-secondary: #4b5763;
+  --text-tertiary: #7c8794;
+  --text-on-accent: #ffffff;
+  --border-subtle: #dde3e9;
+  --border-divider: #c3cbd4;
+  --success: #1e7a4c;
+  --error: #b3261e;
+  --font-sans: "IBM Plex Sans", "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  font-family: var(--font-sans);
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: var(--page-bg);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+button,
+a {
+  font: inherit;
+}
+
+a {
+  color: var(--trust-primary);
+}
+
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--trust-primary);
+  outline-offset: 2px;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.prototype-notice {
+  margin: 0;
+  padding: 0.55rem 1.25rem;
+  background: var(--trust-primary-deep);
+  color: var(--text-on-accent);
+  font-size: 0.8125rem;
+  letter-spacing: 0.01em;
+}
+
+.site-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1.5rem;
+  align-items: center;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.brand {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.brand-mark {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 6px;
+  background: var(--trust-primary);
+  color: var(--text-on-accent);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.brand-name,
+.brand-tag,
+.health-label,
+.health-detail {
+  margin: 0;
+}
+
+.brand-name {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.brand-tag {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.nav-list {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.nav-link {
+  display: inline-block;
+  padding: 0.4rem 0.7rem;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.nav-link.active {
+  background: var(--page-bg-dim);
+  color: var(--trust-primary-deep);
+  font-weight: 500;
+}
+
+.content {
+  width: min(46rem, calc(100% - 2rem));
+  margin: 1.5rem auto 3rem;
+}
+
+.health,
+.panel {
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.health {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1rem;
+  padding: 0.85rem 1rem;
+}
+
+.health-dot {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.health-dot.ok {
+  background: var(--success);
+}
+
+.health-dot.error {
+  background: var(--error);
+}
+
+.health-label {
+  font-weight: 500;
+}
+
+.health-detail {
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.retry {
+  margin-left: auto;
+  border: 1px solid var(--border-divider);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--trust-primary-deep);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+
+.retry:hover {
+  background: var(--page-bg-dim);
+}
+
+.panel {
+  padding: 1.5rem 1.35rem 1.35rem;
+}
+
+h1 {
+  margin: 0 0 0.5rem;
+  font-size: 1.75rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.lede {
+  margin: 0;
+  color: var(--text-secondary);
+  max-width: 38rem;
+}
+
+.route-list {
+  margin: 1.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.route-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.route-path {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+@media (max-width: 720px) {
+  .site-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .nav-list {
+    flex-wrap: wrap;
+  }
+}
