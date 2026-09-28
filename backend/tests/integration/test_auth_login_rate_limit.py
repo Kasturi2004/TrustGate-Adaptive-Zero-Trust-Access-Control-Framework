@@ -20,6 +20,7 @@ from app.db.models.rate_limit_state import RateLimitState
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.db.session import create_async_engine_for_url, create_session_factory
 from app.main import create_app
+from app.services import security_events
 from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -30,6 +31,7 @@ _NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 _ORIGIN = "http://localhost:5173"
 _PASSWORD = "integration-password-must-not-be-stored"
 _KEY_SECRET = "integration-rate-limit-key-secret"
+_SECURITY_EVENT_TEST_SECRET = "integration-security-event-key-secret"
 
 
 class _UpstreamClient:
@@ -64,8 +66,10 @@ def _configured_client(
         supabase_url="https://project.example.test",
         supabase_anon_key="test-anon-key",
         rate_limit_key_secret=_KEY_SECRET,
+        security_event_key_secret=_SECURITY_EVENT_TEST_SECRET,
     )
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
+    monkeypatch.setattr(security_events, "get_settings", lambda: settings)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_: _UpstreamClient(upstream_calls))
     application = create_app(settings)
 
