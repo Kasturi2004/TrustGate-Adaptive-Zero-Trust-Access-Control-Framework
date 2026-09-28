@@ -16,6 +16,7 @@ from app.core.limiter import limiter
 from app.core.rate_limit import account_rate_limit_key, ip_rate_limit_key
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.main import create_app
+from app.services import security_events
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,8 +127,10 @@ def _client(
         supabase_anon_key="test-anon-key",
         supabase_service_role_key="must-not-be-used",
         rate_limit_key_secret="rate-limit-test-secret",
+        security_event_key_secret="security-event-test-secret",
     )
     monkeypatch.setattr(auth, "get_settings", lambda: settings)
+    monkeypatch.setattr(security_events, "get_settings", lambda: settings)
     monkeypatch.setattr(httpx, "AsyncClient", lambda **_: mock_client)
 
     async def consume_attempt(
@@ -194,6 +197,148 @@ def test_valid_credentials_are_proxied_and_token_response_is_relayed(
         "Content-Type": "application/json",
     }
     assert kwargs["json"] == {"email": "user@example.test", "password": _PASSWORD}
+
+
+def test_successful_login_records_redacted_security_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = "e77184cf-0f33-44cf-9ec1-0789a66c2cab"
+    body = (
+        '{"access_token":"test-access-token-never-log",'
+        '"refresh_token":"test-refresh-token-never-log",'
+        f'"user":{{"id":"{user_id}"}}'
+        "}"
+    ).encode()
+    runtime = _RateLimitRuntime()
+    client = _client(monkeypatch, _MockClient(_upstream_response(200, body)), runtime=runtime)
+
+    response = client.post(
+        "/auth/login",
+        json={"email": "user@example.test", "password": _PASSWORD},
+    )
+
+    assert response.status_code == 200
+    event = runtime.session.add.call_args.args[0]
+    assert event.event_type == "LOGIN_SUCCESS"
+    assert str(event.actor_id) == user_id
+    assert set(event.details) == {"email_identifier"}
+    assert event.details["email_identifier"] == security_events.email_identifier(
+        "user@example.test"
+    )
+    assert "user@example.test" not in str(event.details)
+    assert _PASSWORD not in str(event.details)
+    assert _ACCESS_TOKEN not in str(event.details)
+    assert _REFRESH_TOKEN not in str(event.details)
+    runtime.session.commit.assert_not_awaited()
+
+
+def test_successful_login_security_event_failure_returns_safe_500_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _RateLimitRuntime()
+    mock_client = _MockClient(
+        _upstream_response(
+            200,
+            (
+                b'{"access_token":"test-access-token-never-log",'
+                b'"refresh_token":"test-refresh-token-never-log",'
+                b'"user":{"id":"e77184cf-0f33-44cf-9ec1-0789a66c2cab"}}'
+            ),
+        )
+    )
+    client = _client(
+        monkeypatch,
+        mock_client,
+        runtime=runtime,
+        raise_server_exceptions=False,
+    )
+    private_error = (
+        f"private audit persistence failure {_PASSWORD} {_ACCESS_TOKEN} "
+        f"{_REFRESH_TOKEN} user@example.test"
+    )
+
+    def fail_event_persistence(*_: Any, **__: Any) -> None:
+        raise RuntimeError(private_error)
+
+    monkeypatch.setattr(auth, "record_event", fail_event_persistence)
+
+    response = client.post(
+        "/auth/login",
+        json={"email": "user@example.test", "password": _PASSWORD},
+        headers={"X-Request-ID": "login-event-storage-failure"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {
+        "error": {
+            "code": "INTERNAL_ERROR",
+            "message": "An unexpected error occurred.",
+            "request_id": "login-event-storage-failure",
+        }
+    }
+    assert private_error not in response.text
+    for sensitive_value in (_PASSWORD, _ACCESS_TOKEN, _REFRESH_TOKEN, "user@example.test"):
+        assert sensitive_value not in response.text
+    mock_client.post.assert_awaited_once()
+    assert runtime.transaction.rolled_back is True
+    assert runtime.transaction.committed is False
+
+
+def test_failed_login_records_actorless_redacted_event_and_keeps_generic_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = "user@example.test"
+    runtime = _RateLimitRuntime()
+    upstream_message = f"{email} {_PASSWORD} {_ACCESS_TOKEN} {_REFRESH_TOKEN}"
+    client = _client(
+        monkeypatch,
+        _MockClient(_upstream_response(400, upstream_message.encode())),
+        runtime=runtime,
+    )
+
+    response = client.post(
+        "/auth/login",
+        json={"email": email, "password": _PASSWORD},
+        headers={"X-Request-ID": "login-failure-event"},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["message"] == "Invalid email or password."
+    assert upstream_message not in response.text
+    event = runtime.session.add.call_args.args[0]
+    assert event.event_type == "LOGIN_FAILURE"
+    assert event.actor_id is None
+    assert set(event.details) == {"email_identifier"}
+    assert event.details["email_identifier"] == security_events.email_identifier(email)
+    assert email not in str(event.details)
+    assert _PASSWORD not in str(event.details)
+    assert _ACCESS_TOKEN not in str(event.details)
+    assert _REFRESH_TOKEN not in str(event.details)
+
+
+def test_slowapi_rejection_does_not_create_login_attempt_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _RateLimitRuntime()
+    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    client = _client(monkeypatch, mock_client, runtime=runtime)
+
+    for _attempt in range(5):
+        response = client.post(
+            "/auth/login",
+            json={"email": "user@example.test", "password": _PASSWORD},
+        )
+        assert response.status_code == 200
+    events_before_rejection = runtime.session.add.call_count
+
+    limited = client.post(
+        "/auth/login",
+        json={"email": "user@example.test", "password": _PASSWORD},
+    )
+
+    assert limited.status_code == 429
+    assert runtime.session.add.call_count == events_before_rejection
+    assert mock_client.post.await_count == 5
 
 
 def test_login_is_limited_to_five_requests_and_health_is_not_limited(

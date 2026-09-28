@@ -17,11 +17,20 @@ from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.core.rate_limit import account_rate_limit_key, ip_rate_limit_key
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
+from app.services.security_events import email_identifier, record_event
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 _GENERIC_LOGIN_FAILURE = "Invalid email or password."
 _UPSTREAM_FAILURE = "Authentication service is unavailable."
+
+
+def _authenticated_user_id(response: httpx.Response) -> UUID | None:
+    """Extract Supabase's authenticated user ID without altering its response."""
+    try:
+        return UUID(response.json()["user"]["id"])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 class LoginRequest(BaseModel):
@@ -100,6 +109,13 @@ async def login(
         ) from None
 
     if 200 <= upstream.status_code < 300:
+        async with session.begin():
+            record_event(
+                session,
+                event_type="LOGIN_SUCCESS",
+                actor_id=_authenticated_user_id(upstream),
+                details={"email_identifier": email_identifier(payload.email)},
+            )
         return Response(
             content=upstream.content,
             status_code=upstream.status_code,
@@ -107,6 +123,13 @@ async def login(
         )
 
     if upstream.status_code in {400, 401, 422}:
+        async with session.begin():
+            record_event(
+                session,
+                event_type="LOGIN_FAILURE",
+                actor_id=None,
+                details={"email_identifier": email_identifier(payload.email)},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=_GENERIC_LOGIN_FAILURE,

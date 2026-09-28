@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     device_hash_secret: str | None = None
     # Dedicated HMAC key for opaque login account rate-limit identifiers.
     rate_limit_key_secret: str | None = None
+    security_event_key_secret: str | None = None
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None
@@ -64,6 +65,7 @@ class Settings(BaseSettings):
         "migration_database_url",
         "device_hash_secret",
         "rate_limit_key_secret",
+        "security_event_key_secret",
         "smtp_host",
         "smtp_user",
         "smtp_password",
