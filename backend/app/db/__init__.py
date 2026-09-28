@@ -1,1 +1,1 @@
-"""Async database connection. Models and migrations are not part of this package yet."""
+"""Database primitives; importing this package opens no database connection."""

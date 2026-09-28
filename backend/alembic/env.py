@@ -9,15 +9,13 @@ from logging.config import fileConfig
 
 from alembic import context
 from app.core.config import get_settings
+from app.db.models import target_metadata
 from app.db.session import create_migration_engine, prepare_database_url, require_migration_url
 from sqlalchemy.engine import Connection
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-
-# Models will supply this metadata in a later phase. None means there is no schema to emit.
-target_metadata = None
 
 
 def run_migrations_offline() -> None:

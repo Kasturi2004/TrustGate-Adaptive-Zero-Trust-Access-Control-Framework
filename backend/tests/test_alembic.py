@@ -51,4 +51,4 @@ def test_alembic_has_no_application_revision_yet() -> None:
     revisions = list((BACKEND_ROOT / "alembic" / "versions").glob("*.py"))
     assert revisions == []
     env_source = (BACKEND_ROOT / "alembic" / "env.py").read_text(encoding="utf-8")
-    assert "target_metadata = None" in env_source
+    assert "from app.db.models import target_metadata" in env_source
