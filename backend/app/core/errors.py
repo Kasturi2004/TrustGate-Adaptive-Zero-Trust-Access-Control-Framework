@@ -6,6 +6,7 @@ Client messages never include stack traces, SQL, or filesystem paths.
 
 import logging
 import re
+from collections.abc import Mapping
 from uuid import uuid4
 
 from fastapi import FastAPI, Request
@@ -37,10 +38,17 @@ def request_id_from(request: Request) -> str:
     return "unknown"
 
 
-def error_response(status_code: int, code: str, message: str, request_id: str) -> JSONResponse:
+def error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    request_id: str,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={"error": {"code": code, "message": message, "request_id": request_id}},
+        headers=headers,
     )
 
 
@@ -68,7 +76,13 @@ def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(HTTPException)
     async def handle_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
         code = _STATUS_CODES.get(exc.status_code, f"HTTP_{exc.status_code}")
-        return error_response(exc.status_code, code, _client_message(exc), request_id_from(request))
+        return error_response(
+            exc.status_code,
+            code,
+            _client_message(exc),
+            request_id_from(request),
+            headers=exc.headers,
+        )
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
