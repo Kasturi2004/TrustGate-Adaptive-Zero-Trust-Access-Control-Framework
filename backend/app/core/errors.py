@@ -52,6 +52,17 @@ def error_response(
     )
 
 
+async def handle_rate_limit_exceeded(request: Request, exc: Exception) -> JSONResponse:
+    """Return a generic TrustGate 429 without exposing limiter details."""
+    del exc
+    return error_response(
+        429,
+        "RATE_LIMITED",
+        "Too many requests. Please try again later.",
+        request_id_from(request),
+    )
+
+
 class RequestIdMiddleware(BaseHTTPMiddleware):
     """Attach a request id for logs and error responses."""
 

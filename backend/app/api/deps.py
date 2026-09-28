@@ -9,12 +9,18 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import Clock, SystemClock
 from app.core.config import get_settings
 from app.core.jwt import AuthenticatedUser, InvalidJWTError, validate_access_token
 from app.db.repositories.profile import ProfileRepository
 from app.db.session import create_db_engine, create_session_factory
 
 _bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def get_clock() -> Clock:
+    """Provide the production clock through an overrideable FastAPI dependency."""
+    return SystemClock()
 
 
 @dataclass(frozen=True, slots=True)

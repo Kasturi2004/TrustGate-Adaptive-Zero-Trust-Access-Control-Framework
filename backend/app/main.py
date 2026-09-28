@@ -2,11 +2,17 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
 from app.core.config import Settings, get_settings
-from app.core.errors import RequestIdMiddleware, register_error_handlers
+from app.core.errors import (
+    RequestIdMiddleware,
+    handle_rate_limit_exceeded,
+    register_error_handlers,
+)
+from app.core.limiter import limiter
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -22,6 +28,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json" if docs_enabled else None,
     )
     register_error_handlers(app)
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, handle_rate_limit_exceeded)
     app.add_middleware(RequestIdMiddleware)
     app.add_middleware(
         CORSMiddleware,

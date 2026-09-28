@@ -1,15 +1,22 @@
 """Authentication routes that proxy credentials to Supabase Auth."""
 
+from datetime import timedelta
 from typing import Annotated
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import Response
 
-from app.api.deps import AuthenticatedPrincipal, get_current_user
+from app.api.deps import AuthenticatedPrincipal, get_clock, get_current_user, get_db_session
+from app.core.client_ip import resolve_client_ip
+from app.core.clock import Clock
 from app.core.config import get_settings
+from app.core.limiter import limiter
+from app.core.rate_limit import account_rate_limit_key, ip_rate_limit_key
+from app.db.repositories.rate_limit_state import RateLimitStateRepository
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -35,13 +42,44 @@ class AuthMeResponse(BaseModel):
 
 
 @router.post("/login")
-async def login(payload: LoginRequest) -> Response:
+@limiter.limit("5 per 5 minutes")
+async def login(
+    request: Request,
+    payload: LoginRequest,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> Response:
     """Forward login credentials to Supabase without persisting or logging them."""
     settings = get_settings()
     if not settings.supabase_url or not settings.supabase_anon_key:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=_UPSTREAM_FAILURE,
+        )
+
+    now = clock.now()
+    keys = sorted(
+        (
+            ip_rate_limit_key(resolve_client_ip(request)),
+            account_rate_limit_key(payload.email, settings=settings),
+        )
+    )
+    async with session.begin():
+        repository = RateLimitStateRepository(session)
+        admitted = [
+            await repository.consume_attempt(
+                key,
+                now,
+                attempt_limit=5,
+                window_duration=timedelta(minutes=5),
+            )
+            for key in keys
+        ]
+
+    if not all(admitted):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many requests. Please try again later.",
         )
 
     url = f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=password"
