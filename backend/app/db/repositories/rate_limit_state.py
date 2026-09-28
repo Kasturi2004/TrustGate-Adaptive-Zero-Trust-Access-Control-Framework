@@ -1,6 +1,8 @@
-"""Persistence queries and upsert for rate-limit state."""
+"""Persistence queries and upserts for rate-limit state."""
 
-from sqlalchemy import select
+from datetime import datetime, timedelta
+
+from sqlalchemy import case, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +29,7 @@ class RateLimitStateRepository:
             window_reset_at=state.window_reset_at,
             updated_at=state.updated_at,
         )
-        statement = statement.on_conflict_do_update(
+        upsert_statement = statement.on_conflict_do_update(
             index_elements=[RateLimitState.key],
             set_={
                 "counter": statement.excluded.counter,
@@ -36,7 +38,55 @@ class RateLimitStateRepository:
             },
         )
         result = await self._session.scalars(
-            statement.returning(RateLimitState),
+            upsert_statement.returning(RateLimitState),
             execution_options={"populate_existing": True},
         )
         result.all()
+
+    async def consume_attempt(
+        self,
+        key: str,
+        current_time: datetime,
+        attempt_limit: int,
+        window_duration: timedelta,
+    ) -> bool:
+        """Atomically consume one attempt, returning whether it was admitted.
+
+        The caller supplies the timestamp and owns the transaction. A rejected
+        active window is left untouched and returns no row from PostgreSQL.
+        """
+        if current_time.utcoffset() is None:
+            raise ValueError("current_time must be timezone-aware")
+        if attempt_limit < 1:
+            raise ValueError("attempt_limit must be positive")
+        if window_duration <= timedelta(0):
+            raise ValueError("window_duration must be positive")
+
+        reset_at = current_time + window_duration
+        expired = RateLimitState.window_reset_at <= current_time
+        below_limit = RateLimitState.counter < attempt_limit
+
+        statement = insert(RateLimitState).values(
+            key=key,
+            counter=1,
+            window_reset_at=reset_at,
+            updated_at=current_time,
+        )
+        upsert_statement = statement.on_conflict_do_update(
+            index_elements=[RateLimitState.key],
+            set_={
+                "counter": case(
+                    (expired, 1),
+                    else_=RateLimitState.counter + 1,
+                ),
+                "window_reset_at": case(
+                    (expired, reset_at),
+                    else_=RateLimitState.window_reset_at,
+                ),
+                "updated_at": current_time,
+            },
+            where=or_(expired, below_limit),
+        ).returning(RateLimitState.key)
+
+        result = await self._session.execute(upsert_statement)
+        return result.scalar_one_or_none() is not None
