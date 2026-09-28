@@ -1,4 +1,5 @@
 import { Route, Routes } from "react-router-dom";
+import { ProtectedRoute } from "../auth/ProtectedRoute.tsx";
 import { HomePage } from "../pages/HomePage.tsx";
 import { PlaceholderPage } from "../pages/PlaceholderPage.tsx";
 
@@ -8,7 +9,14 @@ export function AppRoutes() {
       <Route path="/" element={<HomePage />} />
       <Route path="/login" element={<PlaceholderPage title="Login" />} />
       <Route path="/dashboard" element={<PlaceholderPage title="Dashboard" />} />
-      <Route path="/access" element={<PlaceholderPage title="Protected resource" />} />
+      <Route
+        path="/access"
+        element={
+          <ProtectedRoute>
+            <PlaceholderPage title="Protected resource" />
+          </ProtectedRoute>
+        }
+      />
       <Route path="/history" element={<PlaceholderPage title="Access history" />} />
       <Route path="/account" element={<PlaceholderPage title="Account" />} />
       <Route path="/admin/overview" element={<PlaceholderPage title="Security overview" />} />
