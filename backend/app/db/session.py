@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.core.config import Settings
 
@@ -27,12 +28,33 @@ class DatabaseConfigurationError(RuntimeError):
     """DATABASE_URL is missing or not a PostgreSQL URL."""
 
 
+def _required_url(value: str | None, message: str) -> str:
+    if value is None or value.strip() == "":
+        raise DatabaseConfigurationError(message)
+    return value.strip()
+
+
 def require_database_url(settings: Settings) -> str:
     """Return the configured database URL, or raise without echoing its value."""
-    url = settings.database_url
-    if url is None or url.strip() == "":
-        raise DatabaseConfigurationError("DATABASE_URL is not configured")
-    return url.strip()
+    return _required_url(settings.database_url, "DATABASE_URL is not configured")
+
+
+def require_migration_url(settings: Settings) -> str:
+    """Return the Alembic URL.
+
+    MIGRATION_DATABASE_URL is the owner connection once that role exists.
+    Until then, Alembic uses the direct DATABASE_URL. Supabase Auth settings
+    are never consulted.
+    """
+    if (
+        settings.migration_database_url is not None
+        and settings.migration_database_url.strip() != ""
+    ):
+        return settings.migration_database_url.strip()
+    return _required_url(
+        settings.database_url,
+        "MIGRATION_DATABASE_URL or DATABASE_URL is not configured",
+    )
 
 
 def prepare_database_url(raw_url: str) -> tuple[str, dict[str, object]]:
@@ -96,15 +118,32 @@ def _ssl_context(sslmode: str | None, *, supabase_host: bool) -> ssl.SSLContext 
     return None
 
 
-def create_db_engine(settings: Settings) -> AsyncEngine:
+def create_async_engine_for_url(raw_url: str, *, null_pool: bool = False) -> AsyncEngine:
     """Create a lazy async engine. This does not open a connection."""
-    url, connect_args = prepare_database_url(require_database_url(settings))
+    url, connect_args = prepare_database_url(raw_url)
+    if null_pool:
+        return create_async_engine(
+            url,
+            echo=False,
+            poolclass=NullPool,
+            connect_args=connect_args,
+        )
     return create_async_engine(
         url,
         echo=False,
         pool_pre_ping=True,
         connect_args=connect_args,
     )
+
+
+def create_db_engine(settings: Settings) -> AsyncEngine:
+    """Application engine. Uses DATABASE_URL and does not open a connection."""
+    return create_async_engine_for_url(require_database_url(settings))
+
+
+def create_migration_engine(settings: Settings) -> AsyncEngine:
+    """Alembic engine. One connection, closed when the migration command finishes."""
+    return create_async_engine_for_url(require_migration_url(settings), null_pool=True)
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

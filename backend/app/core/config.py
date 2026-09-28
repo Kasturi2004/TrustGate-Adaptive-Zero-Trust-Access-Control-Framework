@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     supabase_service_role_key: str | None = None
     # Async SQLAlchemy connection. Optional so GET /health can boot without a database.
     database_url: str | None = None
+    # Owner-role URL for Alembic. Optional until it differs from DATABASE_URL.
+    # This is not a Supabase Auth credential.
     migration_database_url: str | None = None
     device_hash_secret: str | None = None
     smtp_host: str | None = None

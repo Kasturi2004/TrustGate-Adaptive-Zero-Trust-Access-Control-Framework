@@ -17,13 +17,13 @@ dev-frontend:
 	npm --prefix frontend run dev
 
 lint:
-	cd backend && $(PY) -m ruff check app tests
-	cd backend && $(PY) -m ruff format --check app tests
+	cd backend && $(PY) -m ruff check app tests alembic
+	cd backend && $(PY) -m ruff format --check app tests alembic
 	npm --prefix frontend run lint
 
 format:
-	cd backend && $(PY) -m ruff check --fix app tests
-	cd backend && $(PY) -m ruff format app tests
+	cd backend && $(PY) -m ruff check --fix app tests alembic
+	cd backend && $(PY) -m ruff format app tests alembic
 	npm --prefix frontend run format
 
 typecheck:
@@ -33,6 +33,6 @@ test:
 	cd backend && $(PY) -m pytest
 	npm --prefix frontend run test
 
-# Phase 1 placeholder. Schema migrations begin in Phase 2.
+# Applies committed revisions. Phase 2C has none, so this does not create application tables.
 migrate:
-	@echo Phase 1 placeholder: database migrations start in Phase 2. No migration was applied.
+	cd backend && $(PY) -m alembic upgrade head

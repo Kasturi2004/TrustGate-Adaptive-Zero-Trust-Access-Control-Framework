@@ -72,6 +72,18 @@ cd backend
 .\.venv\Scripts\python -m pytest tests/test_database.py -q
 ```
 
+## Migrations
+
+Alembic is configured, and there is no schema revision yet. It uses `MIGRATION_DATABASE_URL` when that value is set, and otherwise the direct `DATABASE_URL`. It does not read Supabase Auth settings. Run these from `backend/`:
+
+```powershell
+.\.venv\Scripts\python -m alembic current
+.\.venv\Scripts\python -m alembic heads
+.\.venv\Scripts\python -m alembic upgrade head
+```
+
+`upgrade head` applies only committed revisions. With an empty `alembic/versions/` directory it does not create TrustGate tables.
+
 Interactive API docs are at http://127.0.0.1:8000/docs when `APP_ENV` is not `production`.
 
 ## Checks
@@ -87,8 +99,8 @@ Without Make:
 
 ```powershell
 cd backend
-.\.venv\Scripts\python -m ruff check app tests
-.\.venv\Scripts\python -m ruff format --check app tests
+.\.venv\Scripts\python -m ruff check app tests alembic
+.\.venv\Scripts\python -m ruff format --check app tests alembic
 .\.venv\Scripts\python -m mypy
 .\.venv\Scripts\python -m pytest
 cd ..
@@ -97,7 +109,7 @@ npm --prefix frontend run typecheck
 npm --prefix frontend run test
 ```
 
-`make migrate` is a Phase 1 placeholder. It does not create or apply a migration. Database migrations start in Phase 2.
+`make migrate` runs `alembic upgrade head`. It does not create TrustGate tables until a revision exists.
 
 ## Layout
 
