@@ -47,8 +47,15 @@ def test_alembic_config_has_no_connection_string() -> None:
     assert "password" not in contents.lower()
 
 
-def test_alembic_has_no_application_revision_yet() -> None:
-    revisions = list((BACKEND_ROOT / "alembic" / "versions").glob("*.py"))
-    assert revisions == []
+def test_alembic_has_the_initial_role_rls_audit_and_seed_revisions() -> None:
+    revisions = sorted((BACKEND_ROOT / "alembic" / "versions").glob("*.py"))
+    assert [revision.name for revision in revisions] == [
+        "20260928_01_initial_schema.py",
+        "20260928_02_runtime_role_privileges.py",
+        "20260928_03_enable_rls.py",
+        "20260928_04_profile_auth_triggers.py",
+        "20260928_05_security_events_append_only.py",
+        "20260928_06_seed_pol_1_0.py",
+    ]
     env_source = (BACKEND_ROOT / "alembic" / "env.py").read_text(encoding="utf-8")
     assert "from app.db.models import target_metadata" in env_source

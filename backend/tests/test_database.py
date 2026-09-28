@@ -6,6 +6,7 @@ import pytest
 from app.core.config import Settings, get_settings
 from app.db.session import (
     DatabaseConfigurationError,
+    create_async_engine_for_url,
     create_db_engine,
     create_session_factory,
     prepare_database_url,
@@ -79,13 +80,11 @@ def test_health_works_when_the_database_is_unreachable() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_live_database_select_one() -> None:
-    settings = get_settings()
-    if settings.database_url is None:
-        pytest.skip("DATABASE_URL is not configured; skipping the live connectivity check")
+def test_live_database_select_one(test_database_url: str) -> None:
+    """Check connectivity only to the explicit, validated scratch database."""
 
     async def _check() -> int:
-        engine = create_db_engine(settings)
+        engine = create_async_engine_for_url(test_database_url)
         try:
             return await select_one(create_session_factory(engine))
         except Exception:

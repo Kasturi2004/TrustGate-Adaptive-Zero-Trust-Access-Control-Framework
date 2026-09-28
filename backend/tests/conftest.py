@@ -3,6 +3,8 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+pytest_plugins = ("tests.integration.fixtures",)
+
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("CORS_ALLOWED_ORIGIN", "http://localhost:5173")
 
