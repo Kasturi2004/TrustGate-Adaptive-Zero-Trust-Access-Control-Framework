@@ -1,12 +1,14 @@
 """Authentication routes that proxy credentials to Supabase Auth."""
 
 from typing import Annotated
+from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, StrictStr
 from starlette.responses import Response
 
+from app.api.deps import AuthenticatedPrincipal, get_current_user
 from app.core.config import get_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -22,6 +24,14 @@ class LoginRequest(BaseModel):
 
     email: Annotated[StrictStr, Field(min_length=1, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
     password: Annotated[StrictStr, Field(min_length=1)]
+
+
+class AuthMeResponse(BaseModel):
+    """Identity fields resolved from the authenticated user's profile."""
+
+    id: UUID
+    email: str | None
+    role: Annotated[str, Field(pattern=r"^(USER|ADMIN)$")]
 
 
 @router.post("/login")
@@ -68,3 +78,15 @@ async def login(payload: LoginRequest) -> Response:
         status_code=status.HTTP_502_BAD_GATEWAY,
         detail=_UPSTREAM_FAILURE,
     ) from None
+
+
+@router.get("/me", response_model=AuthMeResponse)
+async def read_current_user(
+    current_user: Annotated[AuthenticatedPrincipal, Depends(get_current_user)],
+) -> AuthMeResponse:
+    """Return the verified user's profile identity."""
+    return AuthMeResponse(
+        id=current_user.id,
+        email=current_user.email,
+        role=current_user.role,
+    )
