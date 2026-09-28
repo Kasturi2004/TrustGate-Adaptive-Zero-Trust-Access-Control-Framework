@@ -1,4 +1,5 @@
 """Security event recording service."""
+
 from __future__ import annotations
 
 import hashlib
@@ -28,11 +29,8 @@ def _safe_details(
     if not details:
         return {}
 
-    return {
-        key: value
-        for key, value in details.items()
-        if key in allowed
-    }
+    return {key: value for key, value in details.items() if key in allowed}
+
 
 def email_identifier(email: str) -> str:
     """Return a stable opaque identifier for a login email address."""
@@ -49,6 +47,7 @@ def email_identifier(email: str) -> str:
     ).hexdigest()
 
     return f"email:v1:{digest}"
+
 
 def record_event(
     session: AsyncSession,
