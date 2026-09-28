@@ -1,13 +1,14 @@
 import { Route, Routes } from "react-router-dom";
 import { ProtectedRoute } from "../auth/ProtectedRoute.tsx";
 import { HomePage } from "../pages/HomePage.tsx";
+import { LoginPage } from "../pages/LoginPage.tsx";
 import { PlaceholderPage } from "../pages/PlaceholderPage.tsx";
 
 export function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
-      <Route path="/login" element={<PlaceholderPage title="Login" />} />
+      <Route path="/login" element={<LoginPage />} />
       <Route path="/dashboard" element={<PlaceholderPage title="Dashboard" />} />
       <Route
         path="/access"
