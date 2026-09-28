@@ -421,8 +421,8 @@ def test_rate_limit_repository_add_or_update_uses_model_fields() -> None:
 def test_rate_limit_repository_consume_attempt_uses_atomic_bounded_upsert() -> None:
     session = _mock_session()
     result = MagicMock()
-    result.scalar_one_or_none.return_value = "login:ip:v1:test"
-    session.execute.return_value = result
+    result.first.return_value = cast(RateLimitState, object())
+    session.scalars.return_value = result
     repository = RateLimitStateRepository(session)
     now = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 
@@ -431,8 +431,8 @@ def test_rate_limit_repository_consume_attempt_uses_atomic_bounded_upsert() -> N
     )
 
     assert admitted is True
-    session.execute.assert_awaited_once()
-    statement = session.execute.await_args.args[0]
+    session.scalars.assert_awaited_once()
+    statement = session.scalars.await_args.args[0]
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
     assert "INSERT INTO public.rate_limit_state" in sql
     assert "ON CONFLICT (key) DO UPDATE" in sql
@@ -440,14 +440,16 @@ def test_rate_limit_repository_consume_attempt_uses_atomic_bounded_upsert() -> N
     assert "rate_limit_state.counter <" in sql
     assert "CASE WHEN" in sql
     assert "RETURNING public.rate_limit_state.key" in sql
+    assert session.scalars.await_args.kwargs["execution_options"] == {"populate_existing": True}
+    session.execute.assert_not_awaited()
     session.commit.assert_not_awaited()
 
 
 def test_rate_limit_repository_consume_attempt_returns_false_when_rejected() -> None:
     session = _mock_session()
     result = MagicMock()
-    result.scalar_one_or_none.return_value = None
-    session.execute.return_value = result
+    result.first.return_value = None
+    session.scalars.return_value = result
     repository = RateLimitStateRepository(session)
 
     admitted = asyncio.run(
@@ -460,6 +462,7 @@ def test_rate_limit_repository_consume_attempt_returns_false_when_rejected() -> 
     )
 
     assert admitted is False
+    session.scalars.assert_awaited_once()
     session.commit.assert_not_awaited()
 
 
@@ -477,7 +480,7 @@ def test_rate_limit_repository_consume_attempt_requires_aware_time() -> None:
     else:
         raise AssertionError("naive timestamps must be rejected")
 
-    session.execute.assert_not_awaited()
+    session.scalars.assert_not_awaited()
 
 
 def test_security_event_repository_add_is_append_only() -> None:

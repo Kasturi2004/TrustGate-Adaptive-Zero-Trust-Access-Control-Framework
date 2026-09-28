@@ -86,7 +86,10 @@ class RateLimitStateRepository:
                 "updated_at": current_time,
             },
             where=or_(expired, below_limit),
-        ).returning(RateLimitState.key)
+        ).returning(RateLimitState)
 
-        result = await self._session.execute(upsert_statement)
-        return result.scalar_one_or_none() is not None
+        result = await self._session.scalars(
+            upsert_statement,
+            execution_options={"populate_existing": True},
+        )
+        return result.first() is not None
