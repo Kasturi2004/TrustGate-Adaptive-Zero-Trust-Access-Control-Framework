@@ -388,6 +388,8 @@ def test_rate_limit_repository_get_for_update_locks_row() -> None:
 
 def test_rate_limit_repository_add_or_update_uses_model_fields() -> None:
     session = _mock_session()
+    scalar_result = MagicMock()
+    session.scalars.return_value = scalar_result
     now = datetime.now(UTC)
     state = cast(
         RateLimitState,
@@ -402,14 +404,17 @@ def test_rate_limit_repository_add_or_update_uses_model_fields() -> None:
 
     asyncio.run(repository.add_or_update(state))
 
-    session.execute.assert_awaited_once()
+    session.scalars.assert_awaited_once()
     sql = str(
-        session.execute.await_args.args[0].compile(dialect=postgresql.dialect())  # type: ignore[no-untyped-call]
+        session.scalars.await_args.args[0].compile(dialect=postgresql.dialect())  # type: ignore[no-untyped-call]
     )
     assert "ON CONFLICT (key) DO UPDATE" in sql
     assert "counter = excluded.counter" in sql
     assert "window_reset_at = excluded.window_reset_at" in sql
     assert "updated_at = excluded.updated_at" in sql
+    assert "RETURNING public.rate_limit_state.key" in sql
+    assert session.scalars.await_args.kwargs["execution_options"] == {"populate_existing": True}
+    scalar_result.all.assert_called_once_with()
     session.commit.assert_not_awaited()
 
 

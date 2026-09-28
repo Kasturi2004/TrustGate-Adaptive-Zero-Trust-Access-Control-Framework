@@ -35,4 +35,8 @@ class RateLimitStateRepository:
                 "updated_at": statement.excluded.updated_at,
             },
         )
-        await self._session.execute(statement)
+        result = await self._session.scalars(
+            statement.returning(RateLimitState),
+            execution_options={"populate_existing": True},
+        )
+        result.all()
