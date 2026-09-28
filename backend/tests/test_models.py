@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from app.db.models import Base
-from sqlalchemy import DateTime, Numeric, Text
+from sqlalchemy import DateTime, Numeric, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 
 EXPECTED_TABLES = {
@@ -73,7 +73,7 @@ def test_unique_and_partial_unique_constraints() -> None:
     device_uniques = {
         frozenset(column.name for column in constraint.columns)
         for constraint in tables["public.devices"].constraints
-        if constraint.__class__.__name__ == "UniqueConstraint"
+        if isinstance(constraint, UniqueConstraint)
     }
     assert frozenset({"user_id", "device_hash"}) in device_uniques
     for table_name in ("context_signals", "trust_evaluations", "policy_decisions"):
