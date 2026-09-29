@@ -3,12 +3,14 @@ import { ProtectedRoute } from "../auth/ProtectedRoute.tsx";
 import { HomePage } from "../pages/HomePage.tsx";
 import { LoginPage } from "../pages/LoginPage.tsx";
 import { PlaceholderPage } from "../pages/PlaceholderPage.tsx";
+import { SignupPage } from "../pages/SignupPage.tsx";
 
 export function AppRoutes() {
   return (
     <Routes>
       <Route path="/" element={<HomePage />} />
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
       <Route path="/dashboard" element={<PlaceholderPage title="Dashboard" />} />
       <Route
         path="/access"

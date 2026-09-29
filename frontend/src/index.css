@@ -272,6 +272,11 @@ h1 {
   color: var(--error);
 }
 
+.signup-success {
+  margin: 0;
+  color: var(--success);
+}
+
 .login-signup {
   margin: 1rem 0 0;
   color: var(--text-secondary);
