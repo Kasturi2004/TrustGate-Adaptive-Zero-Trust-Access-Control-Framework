@@ -23,3 +23,18 @@ def test_preflight_rejects_disallowed_origin(client: TestClient) -> None:
     )
     assert response.headers.get("access-control-allow-origin") != "https://evil.example"
     assert "access-control-allow-origin" not in response.headers
+
+
+def test_auth_me_preflight_allows_authorization_header(client: TestClient) -> None:
+    response = client.options(
+        "/auth/me",
+        headers={
+            "Origin": "http://localhost:5173",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "authorization",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+    assert "authorization" in response.headers["access-control-allow-headers"].lower()
