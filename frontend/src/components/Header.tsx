@@ -1,4 +1,6 @@
 import { NavLink } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider.tsx";
+import { LogoutButton } from "./LogoutButton.tsx";
 
 const links = [
   { to: "/", label: "Home", end: true },
@@ -8,6 +10,9 @@ const links = [
 ];
 
 export function Header() {
+  const { session, user } = useAuth();
+  const isAuthenticated = Boolean(session && user);
+
   return (
     <header className="site-header">
       <div className="brand">
@@ -21,17 +26,20 @@ export function Header() {
       </div>
       <nav aria-label="Primary">
         <ul className="nav-list">
-          {links.map((link) => (
-            <li key={link.to}>
-              <NavLink
-                to={link.to}
-                end={link.end}
-                className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
-              >
-                {link.label}
-              </NavLink>
-            </li>
-          ))}
+          {links
+            .filter((link) => link.to !== "/login" || !isAuthenticated)
+            .map((link) => (
+              <li key={link.to}>
+                <NavLink
+                  to={link.to}
+                  end={link.end}
+                  className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+                >
+                  {link.label}
+                </NavLink>
+              </li>
+            ))}
+          <LogoutButton />
         </ul>
       </nav>
     </header>
