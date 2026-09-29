@@ -29,10 +29,47 @@ export async function apiRequest(path: string, options: ApiRequestOptions = {}):
   }
 
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  return fetch(`${apiBaseUrl()}${normalizedPath}`, {
+  const url = `${apiBaseUrl()}${normalizedPath}`;
+  const request: RequestInit = {
     method: options.method ?? "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     signal: options.signal,
-  });
+  };
+
+  const response = await fetch(url, request);
+  if (response.status !== 401) {
+    return response;
+  }
+
+  let refreshedAccessToken: string | undefined;
+  try {
+    const { data: refreshedData, error } = await supabase.auth.refreshSession();
+    if (!error) {
+      refreshedAccessToken = refreshedData.session?.access_token;
+    }
+  } catch {
+    // Treat refresh exceptions the same as a refresh response without a usable session.
+  }
+
+  if (!refreshedAccessToken) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Preserve the original authentication response if sign-out fails.
+    }
+    return response;
+  }
+
+  const retryHeaders = new Headers(headers);
+  retryHeaders.set("Authorization", `Bearer ${refreshedAccessToken}`);
+  const retryResponse = await fetch(url, { ...request, headers: retryHeaders });
+  if (retryResponse.status === 401) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      // Preserve the retry authentication response if sign-out fails.
+    }
+  }
+  return retryResponse;
 }
