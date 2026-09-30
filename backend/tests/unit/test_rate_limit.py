@@ -69,7 +69,6 @@ def test_account_key_requires_its_dedicated_secret(monkeypatch: pytest.MonkeyPat
         app_env="test",
         cors_allowed_origin="http://localhost:5173",
         rate_limit_key_secret=None,
-        _env_file=None,
     )
 
     with pytest.raises(RateLimitKeyConfigurationError):
