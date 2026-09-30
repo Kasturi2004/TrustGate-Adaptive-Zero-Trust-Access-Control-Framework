@@ -8,6 +8,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.core.clock import Clock, SystemClock
 from app.core.config import get_settings
@@ -50,7 +51,7 @@ async def get_verified_identity(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise _not_authenticated()
     try:
-        return validate_access_token(credentials.credentials)
+        return await run_in_threadpool(validate_access_token, credentials.credentials)
     except InvalidJWTError:
         raise _not_authenticated() from None
 

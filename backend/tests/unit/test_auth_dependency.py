@@ -9,13 +9,18 @@ from uuid import UUID
 import jwt
 import pytest
 from app.api import deps
+from app.core import jwt as jwt_module
 from app.core.config import Settings
 from app.db.models.profile import Profile
+from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi import Depends
 from fastapi.testclient import TestClient
+from jwt import PyJWKClient
+from jwt.algorithms import ECAlgorithm
 from sqlalchemy.ext.asyncio import AsyncSession
 
-_TEST_SECRET = "phase-three-test-secret-" + ("z" * 48)
+_TEST_PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
+_TEST_KID = "auth-dependency-test-key"
 _USER_ID = UUID("e77184cf-0f33-44cf-9ec1-0789a66c2cab")
 _OTHER_USER_ID = UUID("f7ece3de-0143-415f-bd7e-1976202be976")
 _FUTURE_EXPIRY = 2_000_000_000
@@ -25,7 +30,7 @@ def _settings() -> Settings:
     return Settings(
         app_env="test",
         cors_allowed_origin="http://localhost:5173",
-        supabase_jwt_secret=_TEST_SECRET,
+        supabase_url="https://test-project.supabase.co",
     )
 
 
@@ -34,12 +39,14 @@ def _token(user_id: UUID = _USER_ID, *, role: str = "ADMIN") -> str:
         {
             "sub": str(user_id),
             "aud": "authenticated",
+            "iss": "https://test-project.supabase.co/auth/v1",
             "exp": _FUTURE_EXPIRY,
             "role": role,
             "user_metadata": {"role": role},
         },
-        _TEST_SECRET,
-        algorithm="HS256",
+        _TEST_PRIVATE_KEY,
+        algorithm="ES256",
+        headers={"kid": _TEST_KID},
     )
 
 
@@ -60,11 +67,15 @@ def _client(
     session: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
-    from app.core import jwt as jwt_module
     from app.main import create_app
 
     settings = _settings()
     monkeypatch.setattr(jwt_module, "get_settings", lambda: settings)
+
+    test_jwk = ECAlgorithm.to_jwk(_TEST_PRIVATE_KEY.public_key(), as_dict=True)
+    test_jwk.update({"kid": _TEST_KID, "alg": "ES256", "use": "sig", "key_ops": ["verify"]})
+    monkeypatch.setattr(PyJWKClient, "fetch_data", lambda _client: {"keys": [test_jwk]})
+    jwt_module._jwks_client.cache_clear()
     application = create_app(settings)
 
     async def override_session() -> AsyncIterator[AsyncSession]:
