@@ -15,6 +15,7 @@ from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
 from app.db.models.policy_decision import PolicyDecision
 from app.db.models.policy_version import PolicyVersion
+from app.db.models.profile import Profile
 from app.db.models.security_event import SecurityEvent
 from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.models.trust_factor import TrustFactor
@@ -430,26 +431,66 @@ def test_raw_device_token_is_not_logged(
 def test_gateway_rejects_pipeline_output_containing_raw_device_token(
     migrated_test_database: ScratchDatabase,
 ) -> None:
-    async def exercise(session: AsyncSession) -> None:
-        user_id, policy_id = await _create_prerequisites(session)
-        result = _complete_result(policy_id, "BLOCK")
-        result_with_raw_token = replace(
-            result,
-            device=replace(result.device, device_hash=_RAW_DEVICE_TOKEN),
-        )
-        with pytest.raises(ValueError, match="raw device token"):
-            await access_gateway(
-                session=session,
-                principal=AuthenticatedPrincipal(user_id, None, "USER"),
-                resource=get_protected_resource("ops-dashboard"),
-                device_token=_RAW_DEVICE_TOKEN,
-                client_ip="192.0.2.15",
-                user_agent=None,
-                pipeline=CompleteTestPipeline(result_with_raw_token),
-                clock=FixedClock(_NOW),
+    user_id = uuid4()
+    email = f"raw-token-rejection-{user_id}@integration.test"
+    engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+
+    async def create_profile() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
+                {"id": user_id, "email": email},
             )
 
-        for model in _ALL_GATEWAY_MODELS:
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+    async def remove_profile() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM public.profiles WHERE id = :id"), {"id": user_id}
+            )
+            await connection.execute(text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id})
 
-    migrated_test_database.run_in_transaction(exercise)
+    asyncio.run(create_profile())
+    try:
+
+        async def exercise(session: AsyncSession) -> None:
+            policy_id = await session.scalar(
+                select(PolicyVersion.id).where(PolicyVersion.version_label == "POL-1.0")
+            )
+            assert policy_id is not None
+            result = _complete_result(policy_id, "BLOCK")
+            result_with_raw_token = replace(
+                result,
+                device=replace(result.device, device_hash=_RAW_DEVICE_TOKEN),
+            )
+            with pytest.raises(PipelineExecutionError) as error:
+                await access_gateway(
+                    session=session,
+                    principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                    resource=get_protected_resource("ops-dashboard"),
+                    device_token=_RAW_DEVICE_TOKEN,
+                    client_ip="192.0.2.15",
+                    user_agent=None,
+                    pipeline=CompleteTestPipeline(result_with_raw_token),
+                    clock=FixedClock(_NOW),
+                )
+            assert str(error.value) == "Access evaluation is unavailable"
+
+            for model in _APPLICATION_MODELS:
+                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            profile = await session.get(Profile, user_id)
+            assert profile is not None
+            event = await session.scalar(select(SecurityEvent))
+            assert event is not None
+            assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+            assert event.actor_id == profile.id == user_id
+            assert event.decision == "BLOCK"
+            assert event.risk_category == "HIGH"
+            assert event.details == {}
+            assert _RAW_DEVICE_TOKEN not in repr(event.details)
+
+        migrated_test_database.run_in_transaction(exercise)
+    finally:
+        try:
+            asyncio.run(remove_profile())
+        finally:
+            asyncio.run(engine.dispose())
