@@ -644,6 +644,7 @@ def test_authentication_failures_have_the_same_generic_401(
         {"email": "", "password": _PASSWORD},
         {"email": "user@example.test", "password": ""},
         {"email": "user@example.test", "password": _PASSWORD, "role": "ADMIN"},
+        {"email": "user@example.test", "password": _PASSWORD, "is_deleted": True},
         {"email": 123, "password": _PASSWORD},
     ],
 )
