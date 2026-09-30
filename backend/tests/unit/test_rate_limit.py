@@ -63,8 +63,14 @@ def test_account_key_function_accepts_no_password_token_or_otp_parameters() -> N
     assert tuple(inspect.signature(account_rate_limit_key).parameters) == ("email", "settings")
 
 
-def test_account_key_requires_its_dedicated_secret() -> None:
-    settings = Settings(app_env="test", cors_allowed_origin="http://localhost:5173")
+def test_account_key_requires_its_dedicated_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RATE_LIMIT_KEY_SECRET", raising=False)
+    settings = Settings(
+        app_env="test",
+        cors_allowed_origin="http://localhost:5173",
+        rate_limit_key_secret=None,
+        _env_file=None,
+    )
 
     with pytest.raises(RateLimitKeyConfigurationError):
         account_rate_limit_key("user@example.test", settings=settings)
