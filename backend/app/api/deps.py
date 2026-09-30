@@ -132,15 +132,55 @@ def require_resource_owner(
     return check_resource_owner
 
 
+async def _record_admin_unauthorized_attempt(
+    request: Request,
+    principal: AuthenticatedPrincipal,
+    attempted_role: Role,
+) -> None:
+    """Persist an admin denial in a session independent of the request session."""
+    engine = create_db_engine(get_settings())
+    try:
+        session_factory = create_session_factory(engine)
+        async with session_factory() as audit_session:
+            async with audit_session.begin():
+                route = request.scope.get("route")
+                route_path = getattr(route, "path", "")
+                record_event(
+                    audit_session,
+                    event_type="ADMIN_UNAUTHORIZED_ATTEMPT",
+                    actor_id=principal.id,
+                    decision="BLOCK",
+                    risk_category="HIGH",
+                    details={
+                        "attempted_role": attempted_role,
+                        "path": route_path if isinstance(route_path, str) else "",
+                        "method": request.method,
+                    },
+                )
+    finally:
+        await engine.dispose()
+
+
 def require_role(
     required_role: Role,
 ) -> Callable[..., Awaitable[AuthenticatedPrincipal]]:
     """Build a dependency that authorizes against the database-loaded profile role."""
 
     async def check_role(
+        request: Request,
         current_user: Annotated[AuthenticatedPrincipal, Depends(require_user)],
     ) -> AuthenticatedPrincipal:
         if current_user.role != required_role:
+            request_path = request.url.path
+            is_admin_path = request_path == "/admin" or request_path.startswith("/admin/")
+            if required_role == "ADMIN" and is_admin_path:
+                try:
+                    await _record_admin_unauthorized_attempt(request, current_user, required_role)
+                except Exception:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="An unexpected error occurred.",
+                    ) from None
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Insufficient permissions",

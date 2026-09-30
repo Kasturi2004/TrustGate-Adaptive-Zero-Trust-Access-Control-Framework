@@ -69,6 +69,34 @@ def test_unknown_event_type_drops_all_details() -> None:
     assert event.details == {}
 
 
+def test_admin_unauthorized_attempt_keeps_only_allowlisted_details() -> None:
+    session = AsyncMock(spec=AsyncSession)
+
+    event = record_event(
+        session,
+        event_type="ADMIN_UNAUTHORIZED_ATTEMPT",
+        actor_id=_USER_ID,
+        decision="BLOCK",
+        risk_category="HIGH",
+        details={
+            "attempted_role": "ADMIN",
+            "path": "/admin/verification",
+            "method": "GET",
+            "password": "must-not-persist",
+            "access_token": "must-not-persist",
+            "secret": "must-not-persist",
+            "unexpected": "must-not-persist",
+        },
+    )
+
+    assert event.details == {
+        "attempted_role": "ADMIN",
+        "path": "/admin/verification",
+        "method": "GET",
+    }
+    session.commit.assert_not_awaited()
+
+
 def test_missing_details_produces_empty_object() -> None:
     session = AsyncMock(spec=AsyncSession)
 
