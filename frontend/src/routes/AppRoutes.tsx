@@ -4,6 +4,7 @@ import { AuthEntryRoute } from "../auth/AuthEntryRoute.tsx";
 import { HomePage } from "../pages/HomePage.tsx";
 import { LoginPage } from "../pages/LoginPage.tsx";
 import { PlaceholderPage } from "../pages/PlaceholderPage.tsx";
+import { RequestAccessPage } from "../pages/RequestAccessPage.tsx";
 import { SignupPage } from "../pages/SignupPage.tsx";
 import { AdminRoute } from "./AdminRoute.tsx";
 
@@ -32,7 +33,7 @@ export function AppRoutes() {
         path="/access"
         element={
           <ProtectedRoute>
-            <PlaceholderPage title="Protected resource" />
+            <RequestAccessPage />
           </ProtectedRoute>
         }
       />
