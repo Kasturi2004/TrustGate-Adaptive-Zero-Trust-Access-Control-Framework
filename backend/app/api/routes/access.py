@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header
 
 from app.api.deps import AuthenticatedPrincipal, require_user
 from app.schemas.access import AccessEvaluateRequest, AccessEvaluateResponse
-from app.services.protected_resource import PROTECTED_RESOURCES
+from app.services.protected_resource import get_protected_resource
 
 router = APIRouter(prefix="/access", tags=["access"])
 
@@ -26,7 +26,7 @@ async def evaluate_access(
     the complete gateway pipeline.
     """
     del device_token
-    resource = PROTECTED_RESOURCES[payload.resource_id]
+    resource = get_protected_resource(payload.resource_id)
     return AccessEvaluateResponse(
         evaluation_id=uuid4(),
         decision="BLOCK",
