@@ -1,11 +1,11 @@
 """FastAPI dependencies for authenticated request identities."""
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -15,8 +15,10 @@ from app.core.config import get_settings
 from app.core.jwt import AuthenticatedUser, InvalidJWTError, validate_access_token
 from app.db.repositories.profile import ProfileRepository
 from app.db.session import create_db_engine, create_session_factory
+from app.services.security_events import record_event
 
 _bearer_scheme = HTTPBearer(auto_error=False)
+Role = Literal["USER", "ADMIN"]
 
 
 def get_clock() -> Clock:
@@ -76,3 +78,73 @@ async def get_current_user(
     if profile is None or profile.is_deleted:
         raise _not_authenticated()
     return AuthenticatedPrincipal(id=identity.id, email=profile.email, role=profile.role)
+
+
+async def require_user(
+    current_user: Annotated[AuthenticatedPrincipal, Depends(get_current_user)],
+) -> AuthenticatedPrincipal:
+    """Require a valid, non-deleted user profile for an endpoint."""
+    return current_user
+
+
+def require_resource_owner(
+    resource_owner_dependency: Callable[..., UUID | Awaitable[UUID]],
+    *,
+    resource: str,
+) -> Callable[..., Awaitable[None]]:
+    """Build an ownership dependency around a server-side owner lookup.
+
+    ``resource_owner_dependency`` must resolve the owner from the loaded
+    resource. It must not accept an owner ID supplied by the client. On
+    mismatch, the audit record is committed before the 403 is raised.
+    """
+
+    async def check_resource_owner(
+        request: Request,
+        principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+        resource_owner_id: Annotated[UUID, Depends(resource_owner_dependency)],
+        session: Annotated[AsyncSession, Depends(get_db_session)],
+    ) -> None:
+        if principal.id == resource_owner_id:
+            return
+
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", "")
+        record_event(
+            session,
+            event_type="UNAUTHORIZED_ACCESS_ATTEMPT",
+            actor_id=principal.id,
+            target_user_id=resource_owner_id,
+            decision="BLOCK",
+            risk_category="HIGH",
+            details={
+                "resource": resource,
+                "path": route_path if isinstance(route_path, str) else "",
+                "method": request.method,
+            },
+        )
+        await session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Resource access is forbidden",
+        )
+
+    return check_resource_owner
+
+
+def require_role(
+    required_role: Role,
+) -> Callable[..., Awaitable[AuthenticatedPrincipal]]:
+    """Build a dependency that authorizes against the database-loaded profile role."""
+
+    async def check_role(
+        current_user: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    ) -> AuthenticatedPrincipal:
+        if current_user.role != required_role:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return current_user
+
+    return check_role
