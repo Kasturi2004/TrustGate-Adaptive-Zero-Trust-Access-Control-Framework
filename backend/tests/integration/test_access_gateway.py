@@ -1,5 +1,6 @@
 """PostgreSQL integration tests for gateway persistence and rollback."""
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -19,10 +20,13 @@ from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.models.trust_factor import TrustFactor
 from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
+from app.db.session import create_async_engine_for_url
 from app.services.access_gateway import (
     CompletePipelineResult,
     ContextResult,
     DeviceResult,
+    PipelineExecutionError,
+    PipelineResult,
     TrustFactorResult,
     access_gateway,
     get_security_pipeline,
@@ -161,9 +165,81 @@ def test_default_pipeline_blocks_records_event_and_creates_no_application_rows(
         assert events[0].event_type == "PIPELINE_DEGRADED_FAILSAFE"
         assert events[0].actor_id == user_id
         assert events[0].decision == "BLOCK"
+        assert events[0].risk_category == "HIGH"
+        assert events[0].details == {}
         assert _RAW_DEVICE_TOKEN not in repr(events[0].details)
 
     migrated_test_database.run_in_transaction(exercise)
+
+
+def test_pipeline_exception_records_only_failsafe_event_and_no_application_rows(
+    migrated_test_database: ScratchDatabase,
+) -> None:
+    user_id = uuid4()
+    email = f"pipeline-failure-{user_id}@integration.test"
+    engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+
+    class FailingPipeline:
+        async def run(
+            self,
+            *,
+            principal: AuthenticatedPrincipal,
+            resource: object,
+            device_token: str,
+            client_ip: str,
+            user_agent: str | None,
+        ) -> PipelineResult:
+            del principal, resource, device_token, client_ip, user_agent
+            raise RuntimeError(
+                f"private exception {_RAW_DEVICE_TOKEN} Bearer access-token password"
+            )
+
+    async def create_profile() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
+                {"id": user_id, "email": email},
+            )
+
+    async def remove_profile() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM public.profiles WHERE id = :id"), {"id": user_id}
+            )
+            await connection.execute(text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id})
+
+    asyncio.run(create_profile())
+    try:
+
+        async def exercise(session: AsyncSession) -> None:
+            with pytest.raises(PipelineExecutionError) as error:
+                await access_gateway(
+                    session=session,
+                    principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                    resource=get_protected_resource("ops-dashboard"),
+                    device_token=_RAW_DEVICE_TOKEN,
+                    client_ip="192.0.2.17",
+                    user_agent=None,
+                    pipeline=FailingPipeline(),
+                    clock=FixedClock(_NOW),
+                )
+            assert str(error.value) == "Access evaluation is unavailable"
+
+            for model in _APPLICATION_MODELS:
+                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            event = await session.scalar(select(SecurityEvent))
+            assert event is not None
+            assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+            assert event.actor_id == user_id
+            assert event.decision == "BLOCK"
+            assert event.risk_category == "HIGH"
+            assert event.details == {}
+            assert _RAW_DEVICE_TOKEN not in repr(event.details)
+
+        migrated_test_database.run_in_transaction(exercise)
+    finally:
+        asyncio.run(remove_profile())
+        asyncio.run(engine.dispose())
 
 
 @pytest.mark.parametrize(

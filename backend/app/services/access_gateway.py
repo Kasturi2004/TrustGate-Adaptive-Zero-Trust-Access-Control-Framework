@@ -111,7 +111,12 @@ PipelineResult = CompletePipelineResult | FailClosedPipelineResult
 
 
 class SecurityPipeline(Protocol):
-    """Server-side interface for access evaluation stages."""
+    """Server pipeline contract.
+
+    Implementations must return a complete server-derived result or an
+    explicit degraded result. They must never infer an allow/step-up decision
+    from missing pipeline stages.
+    """
 
     async def run(
         self,
@@ -122,11 +127,16 @@ class SecurityPipeline(Protocol):
         client_ip: str,
         user_agent: str | None,
     ) -> PipelineResult:
-        """Evaluate a request without accepting client-supplied decisions."""
+        """Return complete server output or the decision-free fail-safe result."""
 
 
 class FailClosedSecurityPipeline:
-    """Default pipeline until Phases 6–8 provide real evaluation stages."""
+    """Default pipeline until Phases 6–8 provide real evaluation stages.
+
+    This implementation deliberately has no trust, context, policy, or
+    decision logic; its result can only be interpreted as BLOCK by the
+    gateway.
+    """
 
     async def run(
         self,
@@ -147,6 +157,34 @@ _DEFAULT_PIPELINE = FailClosedSecurityPipeline()
 def get_security_pipeline() -> SecurityPipeline:
     """Provide the production fail-closed pipeline; tests may override it."""
     return _DEFAULT_PIPELINE
+
+
+class PipelineExecutionError(RuntimeError):
+    """Safe marker for an unexpected pipeline failure, without its details."""
+
+
+async def _persist_failsafe_event(
+    session: AsyncSession,
+    actor_id: UUID,
+    *,
+    rollback_first: bool = False,
+) -> None:
+    """Commit only the sanitized degraded-pipeline event in its own transaction."""
+    if rollback_first:
+        await session.rollback()
+    try:
+        await _begin_if_needed(session)
+        record_event(
+            session,
+            event_type="PIPELINE_DEGRADED_FAILSAFE",
+            actor_id=actor_id,
+            decision="BLOCK",
+            risk_category="HIGH",
+        )
+        await session.commit()
+    except BaseException:
+        await session.rollback()
+        raise
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,38 +250,34 @@ async def access_gateway(
     The default fail-closed result persists only its standalone security event;
     no incomplete access-request/evaluation rows are written.
     """
-    evaluated = await pipeline.run(
-        principal=principal,
-        resource=resource,
-        device_token=device_token,
-        client_ip=client_ip,
-        user_agent=user_agent,
-    )
-    now = clock.now()
-    if now.utcoffset() is None:
-        raise ValueError("Gateway clock must return a timezone-aware datetime")
+    try:
+        evaluated = await pipeline.run(
+            principal=principal,
+            resource=resource,
+            device_token=device_token,
+            client_ip=client_ip,
+            user_agent=user_agent,
+        )
+        if not isinstance(evaluated, (CompletePipelineResult, FailClosedPipelineResult)):
+            raise TypeError("Security pipeline returned an unsupported result")
+        if isinstance(evaluated, CompletePipelineResult):
+            _validate_complete_result(evaluated, device_token)
+    except Exception:
+        await _persist_failsafe_event(session, principal.id, rollback_first=True)
+        raise PipelineExecutionError("Access evaluation is unavailable") from None
 
     evaluation_id = uuid4()
     if isinstance(evaluated, FailClosedPipelineResult):
-        try:
-            await _begin_if_needed(session)
-            record_event(
-                session,
-                event_type="PIPELINE_DEGRADED_FAILSAFE",
-                actor_id=principal.id,
-                decision="BLOCK",
-            )
-            await session.commit()
-        except BaseException:
-            await session.rollback()
-            raise
+        await _persist_failsafe_event(session, principal.id)
         return AccessGatewayResponse(
             evaluation_id=evaluation_id,
             decision="BLOCK",
             explanation=evaluated.explanation,
         )
 
-    _validate_complete_result(evaluated, device_token)
+    now = clock.now()
+    if now.utcoffset() is None:
+        raise ValueError("Gateway clock must return a timezone-aware datetime")
     try:
         await _begin_if_needed(session)
 
