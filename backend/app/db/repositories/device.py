@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.device import Device
@@ -41,6 +42,36 @@ class DeviceRepository:
     def add(self, device: Device) -> None:
         """Stage a device for insertion without committing the transaction."""
         self._session.add(device)
+
+    async def upsert_for_access(self, device: Device) -> Device:
+        """Insert a request device or refresh only its last-seen UA fields.
+
+        A recognized timestamp is never changed by an access request. The
+        caller owns the transaction.
+        """
+        statement = insert(Device).values(
+            id=device.id,
+            user_id=device.user_id,
+            device_hash=device.device_hash,
+            recognized_at=device.recognized_at,
+            first_seen_at=device.first_seen_at,
+            last_seen_at=device.last_seen_at,
+            last_user_agent_family=device.last_user_agent_family,
+            last_user_agent_version=device.last_user_agent_version,
+        )
+        upsert = statement.on_conflict_do_update(
+            constraint="user_device_hash",
+            set_={
+                "last_seen_at": statement.excluded.last_seen_at,
+                "last_user_agent_family": statement.excluded.last_user_agent_family,
+                "last_user_agent_version": statement.excluded.last_user_agent_version,
+            },
+        ).returning(Device)
+        result = await self._session.scalars(
+            upsert,
+            execution_options={"populate_existing": True},
+        )
+        return result.one()
 
     async def update_last_seen(self, device_id: UUID, timestamp: datetime) -> Device | None:
         """Update only last_seen_at, returning None if the device does not exist."""

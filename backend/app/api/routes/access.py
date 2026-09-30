@@ -1,12 +1,15 @@
 """Protected-resource access evaluation endpoint."""
 
 from typing import Annotated
-from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedPrincipal, require_user
+from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_user
+from app.core.client_ip import resolve_client_ip
+from app.core.clock import Clock
 from app.schemas.access import AccessEvaluateRequest, AccessEvaluateResponse
+from app.services.access_gateway import SecurityPipeline, access_gateway, get_security_pipeline
 from app.services.protected_resource import get_protected_resource
 
 router = APIRouter(prefix="/access", tags=["access"])
@@ -14,22 +17,36 @@ router = APIRouter(prefix="/access", tags=["access"])
 
 @router.post("/evaluate", response_model=AccessEvaluateResponse)
 async def evaluate_access(
+    request: Request,
     payload: AccessEvaluateRequest,
     device_token: Annotated[str, Header(alias="X-Device-Token", min_length=1)],
     _principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    pipeline: Annotated[SecurityPipeline, Depends(get_security_pipeline)],
 ) -> AccessEvaluateResponse:
-    """Fail closed until the later-phase security pipeline is implemented.
-
-    This Phase 5 placeholder intentionally performs no partial persistence and
-    does not inspect, retain, or return the raw device token. Device token
-    derivation belongs to Phase 6; evaluation and audit persistence belong to
-    the complete gateway pipeline.
-    """
-    del device_token
+    """Evaluate and atomically persist the authenticated user's access request."""
     resource = get_protected_resource(payload.resource_id)
+    try:
+        result = await access_gateway(
+            session=session,
+            principal=_principal,
+            resource=resource,
+            device_token=device_token,
+            client_ip=resolve_client_ip(request),
+            user_agent=request.headers.get("user-agent"),
+            pipeline=pipeline,
+            clock=clock,
+        )
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred.",
+        ) from None
+
     return AccessEvaluateResponse(
-        evaluation_id=uuid4(),
-        decision="BLOCK",
-        explanation=f"Access evaluation for {resource.name} is not available yet.",
-        mfa_challenge_id=None,
+        evaluation_id=result.evaluation_id,
+        decision=result.decision,
+        explanation=result.explanation,
+        mfa_challenge_id=result.mfa_challenge_id,
     )
