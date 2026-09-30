@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useProfileRole } from "../auth/useProfileRole.ts";
 
 const routes = [
   { to: "/login", label: "Login" },
@@ -6,25 +7,29 @@ const routes = [
   { to: "/access", label: "Protected resource" },
   { to: "/history", label: "Access history" },
   { to: "/account", label: "Account" },
-  { to: "/admin/overview", label: "Security overview" },
-  { to: "/admin/events", label: "Security events" },
+  { to: "/admin/overview", label: "Security overview", adminOnly: true },
+  { to: "/admin/events", label: "Security events", adminOnly: true },
 ];
 
 export function HomePage() {
+  const { role } = useProfileRole();
+
   return (
     <section className="panel">
       <h1>Project shell</h1>
       <p className="lede">
-        Phase 1 is the development foundation. These routes are placeholders for later phases.
-        Nothing here signs a user in, scores a request, or reads a database.
+        This project shell links to routes for later phases. Admin links reflect the verified
+        profile role; FastAPI remains responsible for authorizing every admin API request.
       </p>
       <ul className="route-list">
-        {routes.map((route) => (
-          <li key={route.to}>
-            <Link to={route.to}>{route.label}</Link>
-            <span className="route-path">{route.to}</span>
-          </li>
-        ))}
+        {routes
+          .filter((route) => !route.adminOnly || role === "ADMIN")
+          .map((route) => (
+            <li key={route.to}>
+              <Link to={route.to}>{route.label}</Link>
+              <span className="route-path">{route.to}</span>
+            </li>
+          ))}
       </ul>
     </section>
   );

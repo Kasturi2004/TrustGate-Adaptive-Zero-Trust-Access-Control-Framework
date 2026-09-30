@@ -1,16 +1,17 @@
 import { NavLink } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider.tsx";
+import { useProfileRole } from "../auth/useProfileRole.ts";
 import { LogoutButton } from "./LogoutButton.tsx";
 
 const links = [
   { to: "/", label: "Home", end: true },
   { to: "/login", label: "Login", end: false },
   { to: "/dashboard", label: "Dashboard", end: false },
-  { to: "/admin/overview", label: "Admin", end: false },
 ];
 
 export function Header() {
   const { session, user } = useAuth();
+  const { role } = useProfileRole();
   const isAuthenticated = Boolean(session && user);
 
   return (
@@ -39,6 +40,17 @@ export function Header() {
                 </NavLink>
               </li>
             ))}
+          {/* Navigation visibility is UX only; FastAPI must authorize every admin API route. */}
+          {role === "ADMIN" && (
+            <li>
+              <NavLink
+                to="/admin/overview"
+                className={({ isActive }) => (isActive ? "nav-link active" : "nav-link")}
+              >
+                Admin
+              </NavLink>
+            </li>
+          )}
           <LogoutButton />
         </ul>
       </nav>
