@@ -11,5 +11,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["src/**/*.test.ts"],
+    env: {
+      VITE_SUPABASE_URL: "https://supabase.test.invalid",
+      VITE_SUPABASE_ANON_KEY: "vitest-public-anon-key",
+    },
   },
 });
