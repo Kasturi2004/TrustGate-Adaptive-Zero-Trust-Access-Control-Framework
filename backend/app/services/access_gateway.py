@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
 from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address, ip_address
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,12 +24,28 @@ from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.context_signal import ContextSignalRepository
 from app.db.repositories.device import DeviceRepository
 from app.db.repositories.policy_decision import PolicyDecisionRepository
+from app.db.repositories.policy_version import PolicyVersionRepository
 from app.db.repositories.trust_evaluation import TrustEvaluationRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
+from app.schemas.trust import (
+    DeviceFamiliaritySignal,
+    DeviceHealthSignal,
+    TrustEvaluationResult,
+    TrustSignals,
+    TrustWeights,
+)
+from app.schemas.trust import (
+    LocationSignal as TrustLocationSignal,
+)
+from app.schemas.trust import (
+    TimeSignal as TrustTimeSignal,
+)
 from app.services.context.collector import ContextSnapshot, collect_context_snapshot
 from app.services.context.location import GeoResolver
 from app.services.protected_resource import ProtectedResource
 from app.services.security_events import record_event
+from app.services.trust_engine import evaluate as evaluate_trust
+from app.services.trust_persistence import persist_trust_evaluation
 
 Decision = Literal["ALLOW", "STEP_UP", "BLOCK"]
 RiskClassification = Literal["LOW", "MEDIUM", "HIGH"]
@@ -261,6 +277,7 @@ async def access_gateway(
     The default fail-closed result persists only its standalone security event;
     no incomplete access-request/evaluation rows are written.
     """
+    trust_evaluation: TrustEvaluationResult | None = None
     try:
         context_snapshot: ContextSnapshot | None = None
         if request is not None or profile is not None or geo_resolver is not None:
@@ -289,7 +306,40 @@ async def access_gateway(
         if isinstance(evaluated, CompletePipelineResult):
             _validate_complete_result(evaluated, device_token)
             if context_snapshot is not None:
-                evaluated = replace(evaluated, context=context_snapshot)
+                active_policy = await PolicyVersionRepository(session).get_active()
+                if active_policy is None:
+                    raise RuntimeError("No active trust policy is configured")
+                policy_weights = TrustWeights.model_validate(
+                    {
+                        name: Decimal(str(value))
+                        for name, value in active_policy.weights_json.items()
+                    }
+                )
+                signals = TrustSignals(
+                    device_familiarity_raw=cast(
+                        DeviceFamiliaritySignal, context_snapshot.device_familiarity_raw
+                    ),
+                    device_health_raw=cast(DeviceHealthSignal, context_snapshot.device_health_raw),
+                    location_raw=cast(TrustLocationSignal, context_snapshot.location_raw),
+                    time_raw=cast(TrustTimeSignal, context_snapshot.time_raw),
+                )
+                trust_evaluation = evaluate_trust(signals, policy_weights)
+                evaluated = replace(
+                    evaluated,
+                    context=context_snapshot,
+                    policy_version_id=active_policy.id,
+                    trust_score=trust_evaluation.trust_score,
+                    factors=tuple(
+                        TrustFactorResult(
+                            factor_name=factor.factor_name,
+                            raw_value=factor.raw_value,
+                            normalized_score=factor.normalized_score,
+                            weight=factor.weight,
+                            weighted_contribution=factor.weighted_contribution,
+                        )
+                        for factor in trust_evaluation.factors
+                    ),
+                )
     except Exception:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         raise PipelineExecutionError("Access evaluation is unavailable") from None
@@ -354,34 +404,45 @@ async def access_gateway(
         )
         await session.flush()
 
-        TrustEvaluationRepository(session).add(
-            TrustEvaluation(
-                id=evaluation_id,
+        if trust_evaluation is not None:
+            persisted_evaluation = await persist_trust_evaluation(
+                session,
+                result=trust_evaluation,
                 access_request_id=access_request_id,
                 policy_version_id=evaluated.policy_version_id,
-                trust_score=evaluated.trust_score,
                 risk_classification=evaluated.risk_classification,
-                status="COMPLETE",
                 evaluated_at=now,
             )
-        )
-        await session.flush()
-
-        TrustFactorRepository(session).add_many(
-            [
-                TrustFactor(
-                    id=uuid4(),
-                    trust_evaluation_id=evaluation_id,
-                    factor_name=factor.factor_name,
-                    raw_value=factor.raw_value,
-                    normalized_score=factor.normalized_score,
-                    weight=factor.weight,
-                    weighted_contribution=factor.weighted_contribution,
+            evaluation_id = persisted_evaluation.id
+        else:
+            TrustEvaluationRepository(session).add(
+                TrustEvaluation(
+                    id=evaluation_id,
+                    access_request_id=access_request_id,
+                    policy_version_id=evaluated.policy_version_id,
+                    trust_score=evaluated.trust_score,
+                    risk_classification=evaluated.risk_classification,
+                    status="COMPLETE",
+                    evaluated_at=now,
                 )
-                for factor in evaluated.factors
-            ]
-        )
-        await session.flush()
+            )
+            await session.flush()
+
+            TrustFactorRepository(session).add_many(
+                [
+                    TrustFactor(
+                        id=uuid4(),
+                        trust_evaluation_id=evaluation_id,
+                        factor_name=factor.factor_name,
+                        raw_value=factor.raw_value,
+                        normalized_score=factor.normalized_score,
+                        weight=factor.weight,
+                        weighted_contribution=factor.weighted_contribution,
+                    )
+                    for factor in evaluated.factors
+                ]
+            )
+            await session.flush()
 
         PolicyDecisionRepository(session).add(
             PolicyDecision(

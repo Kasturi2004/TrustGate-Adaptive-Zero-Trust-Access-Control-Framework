@@ -13,6 +13,8 @@ from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
 from app.db.models.policy_version import PolicyVersion
 from app.db.models.profile import Profile
+from app.db.models.trust_evaluation import TrustEvaluation
+from app.db.models.trust_factor import TrustFactor
 from app.services.access_gateway import (
     CompletePipelineResult,
     DeviceResult,
@@ -232,7 +234,11 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         signal = await session.scalar(
             select(ContextSignal).where(ContextSignal.access_request_id == request.id)
         )
+        evaluation = await session.scalar(
+            select(TrustEvaluation).where(TrustEvaluation.access_request_id == request.id)
+        )
         assert signal is not None
+        assert evaluation is not None
         assert signal.device_familiarity_raw == "known_device"
         assert signal.device_health_raw == "healthy"
         assert signal.location_raw == "expected_region"
@@ -240,6 +246,29 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert signal.raw_context == dict(snapshot.raw_context)
         assert signal.captured_at == _NOW
         assert result.decision == "BLOCK"
+        assert evaluation.policy_version_id == pipeline.policy_version_id
+        assert evaluation.trust_score == Decimal("100.00")
+        factors = list(
+            (
+                await session.scalars(
+                    select(TrustFactor).where(TrustFactor.trust_evaluation_id == evaluation.id)
+                )
+            ).all()
+        )
+        assert len(factors) == 4
+        factor_rows = {factor.factor_name: factor for factor in factors}
+        assert set(factor_rows) == {
+            "device_familiarity",
+            "device_health",
+            "location_normality",
+            "time_normality",
+        }
+        assert {name: factor.weighted_contribution for name, factor in factor_rows.items()} == {
+            "device_familiarity": Decimal("35.000"),
+            "device_health": Decimal("30.000"),
+            "location_normality": Decimal("20.000"),
+            "time_normality": Decimal("15.000"),
+        }
         assert await session.scalar(select(func.count()).select_from(Device)) == 1
         await session.refresh(device)
         assert device.recognized_at == _NOW - timedelta(days=2)

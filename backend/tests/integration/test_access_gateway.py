@@ -4,12 +4,13 @@ import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
-from ipaddress import IPv4Address
+from ipaddress import IPv4Address, IPv6Address
 from uuid import UUID, uuid4
 
 import pytest
 from app.api.deps import AuthenticatedPrincipal
 from app.core.clock import FixedClock
+from app.core.config import Settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
@@ -33,9 +34,12 @@ from app.services.access_gateway import (
     get_security_pipeline,
 )
 from app.services.context.collector import ContextSnapshot
+from app.services.context.location import GeoRegion
 from app.services.protected_resource import get_protected_resource
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
+from starlette.types import Scope
 
 from tests.integration.database import ScratchDatabase
 
@@ -50,6 +54,41 @@ _APPLICATION_MODELS = (
     PolicyDecision,
 )
 _ALL_GATEWAY_MODELS = (*_APPLICATION_MODELS, SecurityEvent)
+_GATEWAY_DEVICE_SECRET = "phase-7c-integration-device-secret"
+_GATEWAY_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+
+class GatewayGeoResolver:
+    def resolve(self, address: IPv4Address | IPv6Address) -> GeoRegion:
+        del address
+        return GeoRegion("US", "CA")
+
+
+def _context_request() -> Request:
+    scope: Scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/access/evaluate",
+        "raw_path": b"/access/evaluate",
+        "query_string": b"",
+        "headers": [
+            (b"x-device-token", _RAW_DEVICE_TOKEN.encode()),
+            (b"user-agent", _GATEWAY_USER_AGENT.encode()),
+        ],
+        "client": ("8.8.8.8", 44321),
+        "server": ("trustgate.test", 443),
+    }
+
+    async def receive() -> dict[str, object]:
+        return {"type": "http.request", "body": b"{}", "more_body": False}
+
+    return Request(scope, receive)
 
 
 async def _create_prerequisites(session: AsyncSession) -> tuple[UUID, UUID]:
@@ -340,6 +379,52 @@ def test_failure_after_staging_records_rolls_back_everything(
                 user_agent="test",
                 pipeline=CompleteTestPipeline(_complete_result(policy_id, "BLOCK")),
                 clock=FixedClock(_NOW),
+            )
+
+        for model in _ALL_GATEWAY_MODELS:
+            assert await session.scalar(select(func.count()).select_from(model)) == 0
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_trust_persistence_failure_rolls_back_context_and_gateway_rows(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_add_many = TrustFactorRepository.add_many
+
+    def fail_after_trust_factors_are_staged(
+        repository: TrustFactorRepository,
+        factors: object,
+    ) -> None:
+        original_add_many(repository, factors)  # type: ignore[arg-type]
+        raise RuntimeError("private trust-factor persistence failure")
+
+    monkeypatch.setattr(TrustFactorRepository, "add_many", fail_after_trust_factors_are_staged)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, policy_id = await _create_prerequisites(session)
+        profile = await session.get(Profile, user_id)
+        assert profile is not None
+
+        with pytest.raises(RuntimeError, match="private trust-factor persistence failure"):
+            await access_gateway(
+                session=session,
+                principal=AuthenticatedPrincipal(user_id, None, "USER"),
+                resource=get_protected_resource("ops-dashboard"),
+                device_token=_RAW_DEVICE_TOKEN,
+                client_ip="8.8.8.8",
+                user_agent=_GATEWAY_USER_AGENT,
+                pipeline=CompleteTestPipeline(_complete_result(policy_id, "BLOCK")),
+                clock=FixedClock(_NOW),
+                request=_context_request(),
+                profile=profile,
+                geo_resolver=GatewayGeoResolver(),
+                settings=Settings(
+                    app_env="test",
+                    cors_allowed_origin="http://localhost:5173",
+                    device_hash_secret=_GATEWAY_DEVICE_SECRET,
+                ),
             )
 
         for model in _ALL_GATEWAY_MODELS:

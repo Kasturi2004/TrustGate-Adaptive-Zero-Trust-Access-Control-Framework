@@ -9,6 +9,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
+import app.services.access_gateway as access_gateway_service
 import pytest
 from app.api import deps
 from app.api.deps import AuthenticatedPrincipal, require_user
@@ -16,11 +17,16 @@ from app.core.config import Settings, get_settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
+from app.db.models.policy_version import PolicyVersion
 from app.db.models.profile import Profile
 from app.db.models.security_event import SecurityEvent
+from app.db.models.trust_evaluation import TrustEvaluation
+from app.db.models.trust_factor import TrustFactor
 from app.main import create_app
+from app.schemas.trust import TrustEvaluationResult, TrustSignals, TrustWeights
 from app.services.access_gateway import (
     CompletePipelineResult,
+    ContextResult,
     DeviceResult,
     FailClosedPipelineResult,
     TrustFactorResult,
@@ -30,6 +36,7 @@ from app.services.context.collector import ContextSnapshot
 from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import GeoRegion, IPAddress, get_geo_resolver
 from app.services.protected_resource import get_protected_resource
+from app.services.trust_engine import evaluate as evaluate_trust_engine
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -114,7 +121,34 @@ def test_authenticated_request_returns_only_curated_fail_closed_response(
 
 def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    active_policy = PolicyVersion(
+        id=UUID("b8ce345d-9c2b-48e2-928f-7d5abdd19f1c"),
+        version_label="POL-1.0",
+        weights_json={
+            "device_familiarity": 0.35,
+            "device_health": 0.30,
+            "location_normality": 0.20,
+            "time_normality": 0.15,
+        },
+        is_active=True,
+    )
+
+    async def get_active_policy(_repository: object) -> PolicyVersion:
+        return active_policy
+
+    from app.db.repositories.policy_version import PolicyVersionRepository
+
+    monkeypatch.setattr(PolicyVersionRepository, "get_active", get_active_policy)
+    observed: list[tuple[TrustSignals, TrustWeights]] = []
+
+    def record_engine_inputs(signals: TrustSignals, weights: TrustWeights) -> TrustEvaluationResult:
+        observed.append((signals, weights))
+        return evaluate_trust_engine(signals, weights)
+
+    monkeypatch.setattr(access_gateway_service, "evaluate_trust", record_engine_inputs)
+
     class SnapshotPipeline:
         snapshot: ContextSnapshot | None = None
 
@@ -208,8 +242,11 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
 
     session = application.state.test_session
     staged = [call.args[0] for call in session.add.call_args_list]
+    staged.extend(row for call in session.add_all.call_args_list for row in call.args[0])
     access_request = next(row for row in staged if isinstance(row, AccessRequest))
     signal = next(row for row in staged if isinstance(row, ContextSignal))
+    evaluation = next(row for row in staged if isinstance(row, TrustEvaluation))
+    factors = [row for row in staged if isinstance(row, TrustFactor)]
     assert access_request.resolved_region == pipeline.snapshot.resolved_region
     assert signal.access_request_id == access_request.id
     assert signal.device_familiarity_raw == "unknown_device"
@@ -217,6 +254,137 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     assert signal.raw_context == dict(pipeline.snapshot.raw_context)
     assert _DEVICE_TOKEN not in repr(signal.raw_context)
     assert _USER_AGENT not in repr(signal.raw_context)
+    assert evaluation.access_request_id == access_request.id
+    assert evaluation.policy_version_id == active_policy.id
+    assert evaluation.trust_score == Decimal("39.00")
+    assert len(observed) == 1
+    assert observed[0][0] == TrustSignals(
+        device_familiarity_raw="unknown_device",
+        device_health_raw="unhealthy",
+        location_raw="unavailable",
+        time_raw="within_normal_window",
+    )
+    assert observed[0][1].device_familiarity == Decimal("0.35")
+    assert observed[0][1].device_health == Decimal("0.3")
+    assert observed[0][1].location_normality == Decimal("0.2")
+    assert observed[0][1].time_normality == Decimal("0.15")
+    assert len(factors) == 4
+    factor_rows = {factor.factor_name: factor for factor in factors}
+    assert factor_rows["device_familiarity"].raw_value == "unknown_device"
+    assert factor_rows["device_familiarity"].normalized_score == Decimal("20")
+    assert factor_rows["device_familiarity"].weight == Decimal("0.350")
+    assert factor_rows["device_familiarity"].weighted_contribution == Decimal("7.000")
+    assert factor_rows["device_health"].raw_value == "unhealthy"
+    assert factor_rows["device_health"].weighted_contribution == Decimal("3.000")
+    assert factor_rows["location_normality"].raw_value == "unavailable"
+    assert factor_rows["location_normality"].weighted_contribution == Decimal("14.000")
+    assert factor_rows["time_normality"].raw_value == "within_normal_window"
+    assert factor_rows["time_normality"].weighted_contribution == Decimal("15.000")
+
+
+def test_trust_evaluation_failure_records_only_sanitized_block_event(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    active_policy = PolicyVersion(
+        id=UUID("b8ce345d-9c2b-48e2-928f-7d5abdd19f1c"),
+        version_label="POL-1.0",
+        weights_json={
+            "device_familiarity": 0.35,
+            "device_health": 0.30,
+            "location_normality": 0.20,
+            "time_normality": 0.15,
+        },
+        is_active=True,
+    )
+
+    async def get_active_policy(_repository: object) -> PolicyVersion:
+        return active_policy
+
+    from app.db.repositories.policy_version import PolicyVersionRepository
+
+    monkeypatch.setattr(PolicyVersionRepository, "get_active", get_active_policy)
+
+    def fail_trust_evaluation(
+        _signals: TrustSignals, _weights: TrustWeights
+    ) -> TrustEvaluationResult:
+        raise RuntimeError("private trust engine detail")
+
+    monkeypatch.setattr(access_gateway_service, "evaluate_trust", fail_trust_evaluation)
+
+    class CompletePipeline:
+        async def run(self, **_kwargs: object) -> CompletePipelineResult:
+            return CompletePipelineResult(
+                device=DeviceResult("opaque-device-hash", None, None),
+                context=ContextResult(
+                    device_familiarity_raw="unknown_device",
+                    device_health_raw="partially_healthy",
+                    location_raw="unavailable",
+                    time_raw="within_normal_window",
+                    resolved_region=None,
+                    raw_context={},
+                ),
+                policy_version_id=active_policy.id,
+                trust_score=Decimal("50.00"),
+                risk_classification="MEDIUM",
+                factors=(
+                    TrustFactorResult(
+                        "device_familiarity",
+                        "unknown_device",
+                        Decimal("50"),
+                        Decimal("0.350"),
+                        Decimal("17.500"),
+                    ),
+                    TrustFactorResult(
+                        "device_health",
+                        "partially_healthy",
+                        Decimal("50"),
+                        Decimal("0.300"),
+                        Decimal("15.000"),
+                    ),
+                    TrustFactorResult(
+                        "location_normality",
+                        "unavailable",
+                        Decimal("50"),
+                        Decimal("0.200"),
+                        Decimal("10.000"),
+                    ),
+                    TrustFactorResult(
+                        "time_normality",
+                        "within_normal_window",
+                        Decimal("50"),
+                        Decimal("0.150"),
+                        Decimal("7.500"),
+                    ),
+                ),
+                decision="ALLOW",
+                decision_reason="Test fixture only.",
+                explanation="Test fixture only.",
+            )
+
+    application = cast(Any, client.app)
+    application.dependency_overrides[get_security_pipeline] = lambda: CompletePipeline()
+    response = client.post(
+        "/access/evaluate",
+        json={"resource_id": "ops-dashboard"},
+        headers={"X-Device-Token": _DEVICE_TOKEN, "User-Agent": _USER_AGENT},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "An unexpected error occurred."
+    assert "private trust engine detail" not in response.text
+    assert "private trust engine detail" not in caplog.text
+    session = application.state.test_session
+    assert session.rollback.await_count == 1
+    assert session.commit.await_count == 1
+    added = [call.args[0] for call in session.add.call_args_list]
+    assert len(added) == 1
+    assert isinstance(added[0], SecurityEvent)
+    assert added[0].event_type == "PIPELINE_DEGRADED_FAILSAFE"
+    assert added[0].decision == "BLOCK"
+    assert added[0].risk_category == "HIGH"
+    assert added[0].details == {}
 
 
 def test_resource_id_is_optional_and_defaults_to_mvp_resource(client: TestClient) -> None:
