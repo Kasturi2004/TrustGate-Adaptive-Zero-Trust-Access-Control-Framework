@@ -5,7 +5,7 @@ import inspect
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from app.core.clock import FixedClock
@@ -19,9 +19,9 @@ from app.services.context.timebaseline import (
 class StubAccessRequestRepository:
     def __init__(self, events: list[SimpleNamespace]) -> None:
         self.events = events
-        self.requested_user_ids = []
+        self.requested_user_ids: list[UUID] = []
 
-    async def list_by_user(self, user_id):
+    async def list_by_user(self, user_id: UUID) -> list[SimpleNamespace]:
         self.requested_user_ids.append(user_id)
         return self.events
 
