@@ -2,22 +2,48 @@
 
 from asyncio import run
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from decimal import Decimal
+from ipaddress import IPv4Address
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
 import pytest
 from app.api import deps
 from app.api.deps import AuthenticatedPrincipal, require_user
+from app.core.config import Settings, get_settings
+from app.db.models.access_request import AccessRequest
+from app.db.models.context_signal import ContextSignal
+from app.db.models.device import Device
+from app.db.models.profile import Profile
 from app.db.models.security_event import SecurityEvent
 from app.main import create_app
-from app.services.access_gateway import FailClosedPipelineResult, get_security_pipeline
+from app.services.access_gateway import (
+    CompletePipelineResult,
+    DeviceResult,
+    FailClosedPipelineResult,
+    TrustFactorResult,
+    get_security_pipeline,
+)
+from app.services.context.collector import ContextSnapshot
+from app.services.context.device_familiarity import device_token_hash
+from app.services.context.location import GeoRegion, IPAddress, get_geo_resolver
 from app.services.protected_resource import get_protected_resource
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 _USER_ID = UUID("07b4812d-6615-40fd-84e0-9612a7fc1b12")
 _DEVICE_TOKEN = "test-device-token-do-not-echo"
+_DEVICE_SECRET = "phase-6f-route-test-device-secret"
+_NOW = datetime(2026, 9, 30, 12, tzinfo=UTC)
+_USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0"
+
+
+class TestGeoResolver:
+    def resolve(self, address: IPAddress) -> GeoRegion:
+        del address
+        return GeoRegion("US", "CA")
 
 
 @pytest.fixture
@@ -25,6 +51,26 @@ def client() -> TestClient:
     application = create_app()
     session = AsyncMock(spec=AsyncSession)
     session.in_transaction.return_value = True
+    profile = Profile(
+        id=_USER_ID,
+        email="user@example.test",
+        role="USER",
+        timezone="UTC",
+        is_deleted=False,
+    )
+    session.get.return_value = profile
+    scalar_result = Mock()
+    scalar_result.first.return_value = None
+    scalar_result.all.return_value = []
+    scalar_result.one.return_value = Device(
+        id=UUID("e0d8881d-a9aa-4c0c-8f2c-582e389c95c5"),
+        user_id=_USER_ID,
+        device_hash="opaque-device-hash",
+        recognized_at=None,
+        first_seen_at=_NOW,
+        last_seen_at=_NOW,
+    )
+    session.scalars.return_value = scalar_result
     application.state.test_session = session
 
     async def override_session() -> AsyncIterator[AsyncSession]:
@@ -36,6 +82,12 @@ def client() -> TestClient:
         role="USER",
     )
     application.dependency_overrides[deps.get_db_session] = override_session
+    application.dependency_overrides[get_settings] = lambda: Settings(
+        app_env="test",
+        cors_allowed_origin="http://localhost:5173",
+        device_hash_secret=_DEVICE_SECRET,
+    )
+    application.dependency_overrides[get_geo_resolver] = TestGeoResolver
     return TestClient(application, client=("127.0.0.1", 12345))
 
 
@@ -58,6 +110,113 @@ def test_authenticated_request_returns_only_curated_fail_closed_response(
     assert response.json()["decision"] == "BLOCK"
     assert response.json()["mfa_challenge_id"] is None
     assert _DEVICE_TOKEN not in response.text
+
+
+def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
+    client: TestClient,
+) -> None:
+    class SnapshotPipeline:
+        snapshot: ContextSnapshot | None = None
+
+        async def run(
+            self,
+            *,
+            principal: AuthenticatedPrincipal,
+            resource: object,
+            device_token: str,
+            client_ip: str,
+            user_agent: str | None,
+            context_snapshot: ContextSnapshot | None = None,
+        ) -> CompletePipelineResult:
+            del principal, resource, client_ip, user_agent
+            assert device_token == _DEVICE_TOKEN
+            assert context_snapshot is not None
+            self.snapshot = context_snapshot
+            return CompletePipelineResult(
+                device=DeviceResult(
+                    device_hash=device_token_hash(
+                        device_token,
+                        settings=Settings(
+                            app_env="test",
+                            cors_allowed_origin="http://localhost:5173",
+                            device_hash_secret=_DEVICE_SECRET,
+                        ),
+                    )
+                    or "opaque-test-hash",
+                    last_user_agent_family=context_snapshot.device_health.browser_family,
+                    last_user_agent_version=context_snapshot.device_health.browser_version,
+                ),
+                context=context_snapshot,
+                policy_version_id=UUID("b8ce345d-9c2b-48e2-928f-7d5abdd19f1c"),
+                trust_score=Decimal("50.00"),
+                risk_classification="MEDIUM",
+                factors=(
+                    TrustFactorResult(
+                        "device_familiarity",
+                        context_snapshot.device_familiarity_raw,
+                        Decimal("50"),
+                        Decimal("0.350"),
+                        Decimal("17.500"),
+                    ),
+                    TrustFactorResult(
+                        "device_health",
+                        context_snapshot.device_health_raw,
+                        Decimal("50"),
+                        Decimal("0.300"),
+                        Decimal("15.000"),
+                    ),
+                    TrustFactorResult(
+                        "location_normality",
+                        context_snapshot.location_raw,
+                        Decimal("50"),
+                        Decimal("0.200"),
+                        Decimal("10.000"),
+                    ),
+                    TrustFactorResult(
+                        "time_normality",
+                        context_snapshot.time_raw,
+                        Decimal("50"),
+                        Decimal("0.150"),
+                        Decimal("7.500"),
+                    ),
+                ),
+                decision="STEP_UP",
+                decision_reason="Test pipeline only.",
+                explanation="Additional verification is required.",
+            )
+
+    pipeline = SnapshotPipeline()
+    application = cast(Any, client.app)
+    application.dependency_overrides[get_security_pipeline] = lambda: pipeline
+
+    response = client.post(
+        "/access/evaluate",
+        json={"resource_id": "ops-dashboard"},
+        headers={"X-Device-Token": _DEVICE_TOKEN, "User-Agent": _USER_AGENT},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["decision"] == "STEP_UP"
+    assert pipeline.snapshot is not None
+    assert pipeline.snapshot.client_ip == IPv4Address("127.0.0.1")
+    assert pipeline.snapshot.location_normality.category == "UNAVAILABLE"
+    assert pipeline.snapshot.device_familiarity.category == "UNKNOWN"
+    assert pipeline.snapshot.device_health.category == "UNHEALTHY"
+    assert pipeline.snapshot.time_normality.local_hour in range(24)
+    assert pipeline.snapshot.raw_context["resolved_region"] is None
+    assert "region" not in pipeline.snapshot.raw_context
+
+    session = application.state.test_session
+    staged = [call.args[0] for call in session.add.call_args_list]
+    access_request = next(row for row in staged if isinstance(row, AccessRequest))
+    signal = next(row for row in staged if isinstance(row, ContextSignal))
+    assert access_request.resolved_region == pipeline.snapshot.resolved_region
+    assert signal.access_request_id == access_request.id
+    assert signal.device_familiarity_raw == "unknown_device"
+    assert signal.location_raw == "unavailable"
+    assert signal.raw_context == dict(pipeline.snapshot.raw_context)
+    assert _DEVICE_TOKEN not in repr(signal.raw_context)
+    assert _USER_AGENT not in repr(signal.raw_context)
 
 
 def test_resource_id_is_optional_and_defaults_to_mvp_resource(client: TestClient) -> None:

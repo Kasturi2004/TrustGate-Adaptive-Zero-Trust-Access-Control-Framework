@@ -36,6 +36,22 @@ class GeoResolver(Protocol):
         """Resolve a public address to its country and subdivision ISO codes."""
 
 
+class UnavailableGeoResolver:
+    """Safe resolver used until the deployment configures its server-side GeoIP source."""
+
+    def resolve(self, address: IPAddress) -> GeoRegion | None:
+        del address
+        return None
+
+
+_DEFAULT_GEO_RESOLVER = UnavailableGeoResolver()
+
+
+def get_geo_resolver() -> GeoResolver:
+    """Provide an overrideable server-side geolocation resolver dependency."""
+    return _DEFAULT_GEO_RESOLVER
+
+
 @dataclass(frozen=True, slots=True)
 class LocationResult:
     """Normalized, coarse location signal without raw resolver data."""

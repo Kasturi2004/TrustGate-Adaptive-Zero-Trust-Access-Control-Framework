@@ -1,20 +1,23 @@
 """Access gateway orchestration and atomic persistence boundary."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import Literal, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.requests import Request
 
 from app.api.deps import AuthenticatedPrincipal
 from app.core.clock import Clock
+from app.core.config import Settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
 from app.db.models.policy_decision import PolicyDecision
+from app.db.models.profile import Profile
 from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.models.trust_factor import TrustFactor
 from app.db.repositories.access_request import AccessRequestRepository
@@ -23,6 +26,8 @@ from app.db.repositories.device import DeviceRepository
 from app.db.repositories.policy_decision import PolicyDecisionRepository
 from app.db.repositories.trust_evaluation import TrustEvaluationRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
+from app.services.context.collector import ContextSnapshot, collect_context_snapshot
+from app.services.context.location import GeoResolver
 from app.services.protected_resource import ProtectedResource
 from app.services.security_events import record_event
 
@@ -90,7 +95,7 @@ class CompletePipelineResult:
     """Complete server-side output needed for the eight application rows."""
 
     device: DeviceResult
-    context: ContextResult
+    context: ContextResult | ContextSnapshot
     policy_version_id: UUID
     trust_score: Decimal
     risk_classification: RiskClassification
@@ -126,6 +131,7 @@ class SecurityPipeline(Protocol):
         device_token: str,
         client_ip: str,
         user_agent: str | None,
+        context_snapshot: ContextSnapshot | None = None,
     ) -> PipelineResult:
         """Return complete server output or the decision-free fail-safe result."""
 
@@ -146,8 +152,9 @@ class FailClosedSecurityPipeline:
         device_token: str,
         client_ip: str,
         user_agent: str | None,
+        context_snapshot: ContextSnapshot | None = None,
     ) -> FailClosedPipelineResult:
-        del principal, resource, device_token, client_ip, user_agent
+        del principal, resource, device_token, client_ip, user_agent, context_snapshot
         return FailClosedPipelineResult()
 
 
@@ -244,6 +251,10 @@ async def access_gateway(
     user_agent: str | None,
     pipeline: SecurityPipeline,
     clock: Clock,
+    request: Request | None = None,
+    profile: Profile | None = None,
+    geo_resolver: GeoResolver | None = None,
+    settings: Settings | None = None,
 ) -> AccessGatewayResponse:
     """Run the server pipeline and persist its complete result atomically.
 
@@ -251,17 +262,34 @@ async def access_gateway(
     no incomplete access-request/evaluation rows are written.
     """
     try:
+        context_snapshot: ContextSnapshot | None = None
+        if request is not None or profile is not None or geo_resolver is not None:
+            if request is None or profile is None or geo_resolver is None:
+                raise ValueError("Context collection dependencies are incomplete")
+            if profile.id != principal.id:
+                raise ValueError("Context profile does not match the authenticated principal")
+            context_snapshot = await collect_context_snapshot(
+                request=request,
+                profile=profile,
+                session=session,
+                clock=clock,
+                geo_resolver=geo_resolver,
+                settings=settings,
+            )
         evaluated = await pipeline.run(
             principal=principal,
             resource=resource,
             device_token=device_token,
             client_ip=client_ip,
             user_agent=user_agent,
+            context_snapshot=context_snapshot,
         )
         if not isinstance(evaluated, (CompletePipelineResult, FailClosedPipelineResult)):
             raise TypeError("Security pipeline returned an unsupported result")
         if isinstance(evaluated, CompletePipelineResult):
             _validate_complete_result(evaluated, device_token)
+            if context_snapshot is not None:
+                evaluated = replace(evaluated, context=context_snapshot)
     except Exception:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         raise PipelineExecutionError("Access evaluation is unavailable") from None
@@ -275,7 +303,11 @@ async def access_gateway(
             explanation=evaluated.explanation,
         )
 
-    now = clock.now()
+    now = (
+        evaluated.context.captured_at
+        if isinstance(evaluated.context, ContextSnapshot)
+        else clock.now()
+    )
     if now.utcoffset() is None:
         raise ValueError("Gateway clock must return a timezone-aware datetime")
     try:

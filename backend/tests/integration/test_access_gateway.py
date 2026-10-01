@@ -32,6 +32,7 @@ from app.services.access_gateway import (
     access_gateway,
     get_security_pipeline,
 )
+from app.services.context.collector import ContextSnapshot
 from app.services.protected_resource import get_protected_resource
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -133,8 +134,9 @@ class CompleteTestPipeline:
         device_token: str,
         client_ip: str,
         user_agent: str | None,
+        context_snapshot: ContextSnapshot | None = None,
     ) -> CompletePipelineResult:
-        del principal, resource, client_ip, user_agent
+        del principal, resource, client_ip, user_agent, context_snapshot
         self.seen_token = device_token
         return self.result
 
@@ -189,8 +191,9 @@ def test_pipeline_exception_records_only_failsafe_event_and_no_application_rows(
             device_token: str,
             client_ip: str,
             user_agent: str | None,
+            context_snapshot: ContextSnapshot | None = None,
         ) -> PipelineResult:
-            del principal, resource, device_token, client_ip, user_agent
+            del principal, resource, device_token, client_ip, user_agent, context_snapshot
             raise RuntimeError(
                 f"private exception {_RAW_DEVICE_TOKEN} Bearer access-token password"
             )
