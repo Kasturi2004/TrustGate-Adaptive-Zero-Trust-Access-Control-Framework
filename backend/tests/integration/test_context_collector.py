@@ -178,6 +178,7 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
             last_seen_at=_NOW - timedelta(days=1),
         )
         session.add(device)
+        await session.flush()
         session.add_all(
             [
                 AccessRequest(
