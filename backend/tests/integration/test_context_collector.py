@@ -222,7 +222,10 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert snapshot is not None
 
         request = await session.scalar(
-            select(AccessRequest).where(AccessRequest.user_id == user_id)
+            select(AccessRequest).where(
+                AccessRequest.user_id == user_id,
+                AccessRequest.requested_at == _NOW,
+            )
         )
         assert request is not None
         assert request.resolved_region == "US-CA"
