@@ -58,10 +58,23 @@ def test_all_required_signal_combinations_produce_four_typed_factors(
     assert [factor.normalized_score for factor in result.factors] == [
         expected_scores[value] for value in values
     ]
+    supplied_weights = (
+        _DEFAULT_WEIGHTS.device_familiarity,
+        _DEFAULT_WEIGHTS.device_health,
+        _DEFAULT_WEIGHTS.location_normality,
+        _DEFAULT_WEIGHTS.time_normality,
+    )
+    assert [factor.weight for factor in result.factors] == list(supplied_weights)
+    assert [factor.weighted_contribution for factor in result.factors] == [
+        factor.normalized_score * weight
+        for factor, weight in zip(result.factors, supplied_weights, strict=True)
+    ]
     assert all(factor.explanation for factor in result.factors)
+    assert Decimal("0") <= result.trust_score <= Decimal("100")
     assert result.trust_score == sum(
         (factor.weighted_contribution for factor in result.factors), start=Decimal("0")
     )
+    assert evaluate(signals, _DEFAULT_WEIGHTS) == result
 
 
 def test_default_policy_weights_have_exact_decimal_factor_calculations() -> None:
