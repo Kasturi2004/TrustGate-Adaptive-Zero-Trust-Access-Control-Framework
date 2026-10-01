@@ -5,6 +5,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
+AccessDecision = Literal["ALLOW", "STEP_UP", "BLOCK"]
+
 
 class AccessEvaluateRequest(BaseModel):
     """Client-selectable resource identifier; decisions remain server-owned."""
@@ -18,6 +20,6 @@ class AccessEvaluateResponse(BaseModel):
     """Curated access-evaluation response; internal evaluation data is excluded."""
 
     evaluation_id: UUID
-    decision: Literal["ALLOW", "STEP_UP", "BLOCK"]
+    decision: AccessDecision
     explanation: str
     mfa_challenge_id: UUID | None
