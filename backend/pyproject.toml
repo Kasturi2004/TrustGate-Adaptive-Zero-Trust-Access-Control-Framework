@@ -28,6 +28,7 @@ dev = [
   "mypy>=1.13",
   "pytest>=8",
   "ruff>=0.8",
+  "tzdata>=2024.1",
 ]
 
 [tool.setuptools.packages.find]
