@@ -45,6 +45,20 @@ def _is_trusted_proxy(peer: IPAddress, networks: tuple[IPNetwork, ...]) -> bool:
     return any(peer.version == network.version and peer in network for network in networks)
 
 
+def is_trusted_proxy_peer(request: Request, *, settings: Settings | None = None) -> bool:
+    """Return whether the direct socket peer is in the configured proxy allowlist."""
+    client = request.client
+    if client is None:
+        return False
+
+    peer = _parse_ip(client.host)
+    if peer is None:
+        return False
+
+    configuration = settings if settings is not None else get_settings()
+    return _is_trusted_proxy(peer, _configured_proxy_networks(configuration))
+
+
 def _forwarded_client_ip(request: Request, hops: int) -> IPAddress | None:
     if hops <= 0:
         return None

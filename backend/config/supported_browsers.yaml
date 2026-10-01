@@ -1,0 +1,23 @@
+# Prototype policy: this is a browser-observable signal only. It does not
+# establish antivirus, encryption, patch, EDR, MDM, compromise, or attestation.
+supported:
+  browsers:
+    Chrome: "120"
+    Edge: "120"
+    Firefox: "120"
+    Safari: "17"
+  operating_systems:
+    Android: "12"
+    iOS: "16"
+    Mac OS X: "12"
+    Windows 10: "10"
+    Windows 11: "10"
+unsupported:
+  browsers:
+    - Internet Explorer
+  operating_systems:
+    - Windows 7
+    - Windows 8
+    - Windows 8.1
+    - Windows XP
+    - Windows Vista
