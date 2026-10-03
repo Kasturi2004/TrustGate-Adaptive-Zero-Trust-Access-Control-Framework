@@ -29,13 +29,13 @@ from app.services.access_gateway import (
     CompletePipelineResult,
     ContextResult,
     DeviceResult,
-    PipelineExecutionError,
     PipelineResult,
     TrustFactorResult,
     access_gateway,
     get_security_pipeline,
 )
 from app.services.context.collector import ContextSnapshot
+from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import GeoRegion
 from app.services.decision_explanation import explain_decision
 from app.services.policy_engine import evaluate_policy as evaluate_policy_engine
@@ -223,7 +223,7 @@ def test_default_pipeline_blocks_records_event_and_creates_no_application_rows(
     migrated_test_database.run_in_transaction(exercise)
 
 
-def test_pipeline_exception_records_only_failsafe_event_and_no_application_rows(
+def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
     migrated_test_database: ScratchDatabase,
 ) -> None:
     user_id = uuid4()
@@ -264,29 +264,45 @@ def test_pipeline_exception_records_only_failsafe_event_and_no_application_rows(
     try:
 
         async def exercise(session: AsyncSession) -> None:
-            with pytest.raises(PipelineExecutionError) as error:
-                await access_gateway(
-                    session=session,
-                    principal=AuthenticatedPrincipal(user_id, email, "USER"),
-                    resource=get_protected_resource("ops-dashboard"),
-                    device_token=_RAW_DEVICE_TOKEN,
-                    client_ip="192.0.2.17",
-                    user_agent=None,
-                    pipeline=FailingPipeline(),
-                    clock=FixedClock(_NOW),
-                )
-            assert str(error.value) == "Access evaluation is unavailable"
-
-            for model in _APPLICATION_MODELS:
-                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            result = await access_gateway(
+                session=session,
+                principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                resource=get_protected_resource("ops-dashboard"),
+                device_token=_RAW_DEVICE_TOKEN,
+                client_ip="192.0.2.17",
+                user_agent=None,
+                pipeline=FailingPipeline(),
+                clock=FixedClock(_NOW),
+                settings=Settings(
+                    app_env="test",
+                    cors_allowed_origin="http://localhost:5173",
+                    device_hash_secret=_GATEWAY_DEVICE_SECRET,
+                ),
+            )
+            assert result.decision == "STEP_UP"
+            assert result.explanation == "Additional verification is required to continue."
+            request = await session.scalar(select(AccessRequest))
+            assert request is not None
+            assert request.initial_decision == "STEP_UP"
+            assert request.mfa_required is True
+            assert request.final_outcome is None
+            assert request.resolved_at is None
+            evaluation = await session.scalar(select(TrustEvaluation))
+            assert evaluation is not None
+            assert evaluation.status == "DEGRADED_FAILSAFE"
+            assert evaluation.access_request_id == request.id
+            assert await session.scalar(select(func.count()).select_from(PolicyDecision)) == 1
             event = await session.scalar(select(SecurityEvent))
             assert event is not None
             assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
             assert event.actor_id == user_id
-            assert event.decision == "BLOCK"
-            assert event.risk_category == "HIGH"
+            assert event.access_request_id == request.id
+            assert event.trust_evaluation_id == evaluation.id
+            assert event.decision == "STEP_UP"
+            assert event.risk_category == "MEDIUM"
             assert event.details == {}
             assert _RAW_DEVICE_TOKEN not in repr(event.details)
+            assert _GATEWAY_USER_AGENT not in repr(event.details)
 
         migrated_test_database.run_in_transaction(exercise)
     finally:
@@ -398,7 +414,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
     migrated_test_database.run_in_transaction(exercise)
 
 
-def test_complete_result_policy_mismatch_fails_safe_without_gateway_persistence(
+def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
     migrated_test_database: ScratchDatabase,
 ) -> None:
     user_id = uuid4()
@@ -423,32 +439,74 @@ def test_complete_result_policy_mismatch_fails_safe_without_gateway_persistence(
     try:
 
         async def exercise(session: AsyncSession) -> None:
-            active_policy_id = await session.scalar(
-                select(PolicyVersion.id).where(PolicyVersion.version_label == "POL-1.0")
+            active_policy = await session.scalar(
+                select(PolicyVersion).where(PolicyVersion.is_active.is_(True))
             )
-            assert active_policy_id is not None
+            assert active_policy is not None
+            active_policy_id = active_policy.id
+            rejected_policy_id = uuid4()
+            assert active_policy_id != rejected_policy_id
             profile = await session.get(Profile, user_id)
             assert profile is not None
-            with pytest.raises(PipelineExecutionError, match="Access evaluation is unavailable"):
-                await access_gateway(
-                    session=session,
-                    principal=AuthenticatedPrincipal(user_id, email, "USER"),
-                    resource=get_protected_resource("ops-dashboard"),
-                    device_token=_RAW_DEVICE_TOKEN,
-                    client_ip="192.0.2.13",
-                    user_agent="test",
-                    pipeline=CompleteTestPipeline(_complete_result(uuid4(), "ALLOW")),
-                    clock=FixedClock(_NOW),
-                )
+            fallback_settings = Settings(
+                app_env="test",
+                cors_allowed_origin="http://localhost:5173",
+                device_hash_secret=_GATEWAY_DEVICE_SECRET,
+            )
+            response = await access_gateway(
+                session=session,
+                principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                resource=get_protected_resource("ops-dashboard"),
+                device_token=_RAW_DEVICE_TOKEN,
+                client_ip="192.0.2.13",
+                user_agent="test",
+                pipeline=CompleteTestPipeline(_complete_result(rejected_policy_id, "ALLOW")),
+                clock=FixedClock(_NOW),
+                settings=fallback_settings,
+            )
 
-            for model in _APPLICATION_MODELS:
-                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            assert response.decision == "STEP_UP"
+            assert response.explanation == explain_decision("STEP_UP")
+            assert str(rejected_policy_id) not in response.explanation
+            assert "Trust result policy does not match" not in response.explanation
+            request = await session.scalar(select(AccessRequest))
+            assert request is not None
+            assert request.initial_decision == "STEP_UP"
+            assert request.mfa_required is True
+            assert request.final_outcome is None
+            assert request.resolved_at is None
+            evaluation = await session.scalar(select(TrustEvaluation))
+            assert evaluation is not None
+            assert evaluation.status == "DEGRADED_FAILSAFE"
+            assert evaluation.access_request_id == request.id
+            assert evaluation.policy_version_id == active_policy_id
+            assert evaluation.policy_version_id != rejected_policy_id
+            policy_decision = await session.scalar(select(PolicyDecision))
+            assert policy_decision is not None
+            assert policy_decision.decision == "STEP_UP"
+            assert policy_decision.access_request_id == request.id
+            assert policy_decision.trust_evaluation_id == evaluation.id
+            assert policy_decision.policy_version_id == active_policy_id
+            assert policy_decision.policy_version_id != rejected_policy_id
+            device = await session.get(Device, request.device_id)
+            assert device is not None
+            expected_hash = device_token_hash(
+                _RAW_DEVICE_TOKEN,
+                settings=fallback_settings,
+            )
+            assert expected_hash is not None
+            assert device.device_hash == expected_hash
+            assert device.device_hash != _RAW_DEVICE_TOKEN
             event = await session.scalar(select(SecurityEvent))
             assert event is not None
             assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
             assert event.actor_id == user_id
-            assert event.decision == "BLOCK"
+            assert event.access_request_id == request.id
+            assert event.trust_evaluation_id == evaluation.id
+            assert event.decision == "STEP_UP"
             assert event.details == {}
+            assert str(rejected_policy_id) not in repr(event.details)
+            assert "Trust result policy does not match" not in repr(event.details)
 
         migrated_test_database.run_in_transaction(exercise)
     finally:
@@ -652,31 +710,74 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
                 result,
                 device=replace(result.device, device_hash=_RAW_DEVICE_TOKEN),
             )
-            with pytest.raises(PipelineExecutionError) as error:
-                await access_gateway(
-                    session=session,
-                    principal=AuthenticatedPrincipal(user_id, email, "USER"),
-                    resource=get_protected_resource("ops-dashboard"),
-                    device_token=_RAW_DEVICE_TOKEN,
-                    client_ip="192.0.2.15",
-                    user_agent=None,
-                    pipeline=CompleteTestPipeline(result_with_raw_token),
-                    clock=FixedClock(_NOW),
-                )
-            assert str(error.value) == "Access evaluation is unavailable"
-
-            for model in _APPLICATION_MODELS:
-                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            raw_user_agent = "Raw Test Browser Agent/99.7"
+            fallback_settings = Settings(
+                app_env="test",
+                cors_allowed_origin="http://localhost:5173",
+                device_hash_secret=_GATEWAY_DEVICE_SECRET,
+            )
+            response = await access_gateway(
+                session=session,
+                principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                resource=get_protected_resource("ops-dashboard"),
+                device_token=_RAW_DEVICE_TOKEN,
+                client_ip="192.0.2.15",
+                user_agent=raw_user_agent,
+                pipeline=CompleteTestPipeline(result_with_raw_token),
+                clock=FixedClock(_NOW),
+                settings=fallback_settings,
+            )
+            assert response.decision == "STEP_UP"
+            assert response.explanation == explain_decision("STEP_UP")
+            assert _RAW_DEVICE_TOKEN not in response.explanation
+            assert raw_user_agent not in response.explanation
+            assert "Pipeline result contains the raw device token" not in response.explanation
+            request = await session.scalar(select(AccessRequest))
+            assert request is not None
+            assert request.initial_decision == "STEP_UP"
+            assert request.mfa_required is True
+            assert request.final_outcome is None
+            assert request.resolved_at is None
+            evaluation = await session.scalar(select(TrustEvaluation))
+            assert evaluation is not None
+            assert evaluation.status == "DEGRADED_FAILSAFE"
+            assert evaluation.access_request_id == request.id
+            active_policy = await session.scalar(
+                select(PolicyVersion).where(PolicyVersion.is_active.is_(True))
+            )
+            assert active_policy is not None
+            assert evaluation.policy_version_id == active_policy.id
+            policy_decision = await session.scalar(select(PolicyDecision))
+            assert policy_decision is not None
+            assert policy_decision.decision == "STEP_UP"
+            assert policy_decision.access_request_id == request.id
+            assert policy_decision.trust_evaluation_id == evaluation.id
+            assert policy_decision.policy_version_id == active_policy.id
+            device = await session.get(Device, request.device_id)
+            assert device is not None
+            expected_hash = device_token_hash(
+                _RAW_DEVICE_TOKEN,
+                settings=fallback_settings,
+            )
+            assert expected_hash is not None
+            assert device.device_hash == expected_hash
+            assert device.device_hash != _RAW_DEVICE_TOKEN
+            assert _RAW_DEVICE_TOKEN not in repr(device)
+            assert raw_user_agent not in repr(device)
             profile = await session.get(Profile, user_id)
             assert profile is not None
             event = await session.scalar(select(SecurityEvent))
             assert event is not None
             assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
             assert event.actor_id == profile.id == user_id
-            assert event.decision == "BLOCK"
-            assert event.risk_category == "HIGH"
+            assert event.access_request_id == request.id
+            assert event.trust_evaluation_id == evaluation.id
+            assert event.decision == "STEP_UP"
+            assert event.risk_category == "MEDIUM"
             assert event.details == {}
             assert _RAW_DEVICE_TOKEN not in repr(event.details)
+            assert raw_user_agent not in repr(event.details)
+            assert "Pipeline result contains the raw device token" not in repr(event.details)
 
         migrated_test_database.run_in_transaction(exercise)
     finally:

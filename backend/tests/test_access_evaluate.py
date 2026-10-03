@@ -286,7 +286,7 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     assert factor_rows["time_normality"].weighted_contribution == Decimal("15.000")
 
 
-def test_trust_evaluation_failure_records_only_sanitized_block_event(
+def test_trust_evaluation_failure_returns_sanitized_step_up(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -375,20 +375,24 @@ def test_trust_evaluation_failure_records_only_sanitized_block_event(
         headers={"X-Device-Token": _DEVICE_TOKEN, "User-Agent": _USER_AGENT},
     )
 
-    assert response.status_code == 500
-    assert response.json()["error"]["message"] == "An unexpected error occurred."
+    assert response.status_code == 200
+    assert response.json()["decision"] == "STEP_UP"
+    assert response.json()["explanation"] == "Additional verification is required to continue."
     assert "private trust engine detail" not in response.text
     assert "private trust engine detail" not in caplog.text
     session = application.state.test_session
     assert session.rollback.await_count == 1
     assert session.commit.await_count == 1
     added = [call.args[0] for call in session.add.call_args_list]
-    assert len(added) == 1
-    assert isinstance(added[0], SecurityEvent)
-    assert added[0].event_type == "PIPELINE_DEGRADED_FAILSAFE"
-    assert added[0].decision == "BLOCK"
-    assert added[0].risk_category == "HIGH"
-    assert added[0].details == {}
+    request = next(row for row in added if isinstance(row, AccessRequest))
+    assert request.initial_decision == "STEP_UP"
+    assert request.mfa_required is True
+    assert request.final_outcome is None
+    event = next(row for row in added if isinstance(row, SecurityEvent))
+    assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+    assert event.decision == "STEP_UP"
+    assert event.details == {}
+    assert _USER_AGENT not in repr(event.details)
 
 
 def test_resource_id_is_optional_and_defaults_to_mvp_resource(client: TestClient) -> None:
@@ -528,16 +532,15 @@ def test_gateway_failure_returns_safe_error_and_records_sanitized_event(
         },
     )
 
-    assert response.status_code == 500
-    assert response.json()["error"]["code"] == "HTTP_500"
-    assert response.json()["error"]["message"] == "An unexpected error occurred."
-    assert "request_id" in response.json()["error"]
+    assert response.status_code == 200
+    assert response.json()["decision"] == "BLOCK"
+    assert response.json()["explanation"] == "Access is not approved."
     for private_value in private_values:
         assert private_value not in response.text
         assert private_value not in caplog.text
 
     test_session = cast(Any, client.app).state.test_session
-    assert test_session.rollback.await_count == 1
+    assert test_session.rollback.await_count == 2
     assert test_session.commit.await_count == 1
     added = [call.args[0] for call in test_session.add.call_args_list]
     assert len(added) == 1

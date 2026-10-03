@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import datetime
 from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import Literal, Protocol, cast
@@ -42,6 +43,7 @@ from app.schemas.trust import (
     TimeSignal as TrustTimeSignal,
 )
 from app.services.context.collector import ContextSnapshot, collect_context_snapshot
+from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import GeoResolver
 from app.services.decision_explanation import explain_decision
 from app.services.policy_engine import evaluate_policy
@@ -189,6 +191,10 @@ class PipelineExecutionError(RuntimeError):
     """Safe marker for an unexpected pipeline failure, without its details."""
 
 
+class _MissingActivePolicyError(RuntimeError):
+    """Internal signal for the explicit no-active-policy fail-closed path."""
+
+
 async def _persist_failsafe_event(
     session: AsyncSession,
     actor_id: UUID,
@@ -211,6 +217,91 @@ async def _persist_failsafe_event(
     except BaseException:
         await session.rollback()
         raise
+
+
+async def _persist_step_up_failsafe(
+    session: AsyncSession,
+    *,
+    actor_id: UUID,
+    resource: ProtectedResource,
+    device_token: str,
+    client_ip: str,
+    policy_version_id: UUID,
+    stepup_score: Decimal,
+    now: datetime,
+    settings: Settings | None,
+) -> UUID:
+    """Persist a sanitized unresolved request after an evaluation-stage failure."""
+    if now.utcoffset() is None:
+        raise ValueError("Gateway clock must return a timezone-aware datetime")
+    device_hash = device_token_hash(device_token, settings=settings)
+    if device_hash is None:
+        raise ValueError("Device identity is unavailable")
+
+    await _begin_if_needed(session)
+    device = await DeviceRepository(session).upsert_for_access(
+        Device(
+            id=uuid4(),
+            user_id=actor_id,
+            device_hash=device_hash,
+            recognized_at=None,
+            first_seen_at=now,
+            last_seen_at=now,
+            last_user_agent_family=None,
+            last_user_agent_version=None,
+        )
+    )
+    access_request_id = uuid4()
+    AccessRequestRepository(session).add(
+        AccessRequest(
+            id=access_request_id,
+            user_id=actor_id,
+            device_id=device.id,
+            resource_id=resource.resource_id,
+            source_ip=ip_address(client_ip),
+            resolved_region=None,
+            initial_decision="STEP_UP",
+            mfa_required=True,
+            requested_at=now,
+        )
+    )
+    await session.flush()
+    evaluation_id = uuid4()
+    TrustEvaluationRepository(session).add(
+        TrustEvaluation(
+            id=evaluation_id,
+            access_request_id=access_request_id,
+            policy_version_id=policy_version_id,
+            trust_score=stepup_score,
+            risk_classification="MEDIUM",
+            status="DEGRADED_FAILSAFE",
+            evaluated_at=now,
+        )
+    )
+    await session.flush()
+    PolicyDecisionRepository(session).add(
+        PolicyDecision(
+            id=uuid4(),
+            access_request_id=access_request_id,
+            trust_evaluation_id=evaluation_id,
+            policy_version_id=policy_version_id,
+            decision="STEP_UP",
+            decision_reason="Evaluation unavailable; additional verification is required.",
+            decided_at=now,
+        )
+    )
+    await session.flush()
+    record_event(
+        session,
+        event_type="PIPELINE_DEGRADED_FAILSAFE",
+        actor_id=actor_id,
+        access_request_id=access_request_id,
+        trust_evaluation_id=evaluation_id,
+        decision="STEP_UP",
+        risk_category="MEDIUM",
+    )
+    await session.commit()
+    return evaluation_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -312,7 +403,7 @@ async def access_gateway(
             _validate_complete_result(evaluated, device_token)
             active_policy = await PolicyVersionRepository(session).get_active()
             if active_policy is None:
-                raise RuntimeError("No active trust policy is configured")
+                raise _MissingActivePolicyError
             policy_version_id = active_policy.id
             if context_snapshot is not None:
                 policy_weights = TrustWeights.model_validate(
@@ -353,9 +444,50 @@ async def access_gateway(
                 stepup_threshold=active_policy.stepup_threshold,
             )
             policy_decision = evaluate_policy(evaluated.trust_score, policy_thresholds)
-    except Exception:
+    except _MissingActivePolicyError:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
-        raise PipelineExecutionError("Access evaluation is unavailable") from None
+        return AccessGatewayResponse(
+            evaluation_id=uuid4(),
+            decision="BLOCK",
+            explanation=explain_decision("BLOCK"),
+        )
+    except Exception:
+        await session.rollback()
+        try:
+            active_policy = await PolicyVersionRepository(session).get_active()
+        except Exception:
+            active_policy = None
+        if active_policy is None:
+            await _persist_failsafe_event(session, principal.id, rollback_first=True)
+            return AccessGatewayResponse(
+                evaluation_id=uuid4(),
+                decision="BLOCK",
+                explanation=explain_decision("BLOCK"),
+            )
+        try:
+            failsafe_evaluation_id = await _persist_step_up_failsafe(
+                session,
+                actor_id=principal.id,
+                resource=resource,
+                device_token=device_token,
+                client_ip=client_ip,
+                policy_version_id=active_policy.id,
+                stepup_score=active_policy.stepup_threshold,
+                now=clock.now(),
+                settings=settings,
+            )
+        except Exception:
+            await _persist_failsafe_event(session, principal.id, rollback_first=True)
+            return AccessGatewayResponse(
+                evaluation_id=uuid4(),
+                decision="BLOCK",
+                explanation=explain_decision("BLOCK"),
+            )
+        return AccessGatewayResponse(
+            evaluation_id=failsafe_evaluation_id,
+            decision="STEP_UP",
+            explanation=explain_decision("STEP_UP"),
+        )
 
     evaluation_id = uuid4()
     if isinstance(evaluated, FailClosedPipelineResult):
