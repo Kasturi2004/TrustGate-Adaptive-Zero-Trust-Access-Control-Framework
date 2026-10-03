@@ -7,6 +7,7 @@ from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address
 from uuid import UUID, uuid4
 
+import app.services.access_gateway as gateway_service
 import pytest
 from app.api.deps import AuthenticatedPrincipal
 from app.core.clock import FixedClock
@@ -23,6 +24,7 @@ from app.db.models.trust_factor import TrustFactor
 from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
 from app.db.session import create_async_engine_for_url
+from app.schemas.policy import PolicyDecisionResult, PolicyThresholds
 from app.services.access_gateway import (
     CompletePipelineResult,
     ContextResult,
@@ -35,6 +37,7 @@ from app.services.access_gateway import (
 )
 from app.services.context.collector import ContextSnapshot
 from app.services.context.location import GeoRegion
+from app.services.policy_engine import evaluate_policy as evaluate_policy_engine
 from app.services.protected_resource import get_protected_resource
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -105,6 +108,11 @@ async def _create_prerequisites(session: AsyncSession) -> tuple[UUID, UUID]:
 
 
 def _complete_result(policy_version_id: UUID, decision: str) -> CompletePipelineResult:
+    trust_score = {
+        "ALLOW": Decimal("80"),
+        "STEP_UP": Decimal("50"),
+        "BLOCK": Decimal("20"),
+    }[decision]
     return CompletePipelineResult(
         device=DeviceResult(
             device_hash="a" * 64,
@@ -120,36 +128,36 @@ def _complete_result(policy_version_id: UUID, decision: str) -> CompletePipeline
             raw_context={"test_fixture": True},
         ),
         policy_version_id=policy_version_id,
-        trust_score=Decimal("50.00"),
+        trust_score=trust_score,
         risk_classification="MEDIUM",
         factors=(
             TrustFactorResult(
                 "device_familiarity",
                 "unknown_device",
-                Decimal("50"),
+                trust_score,
                 Decimal("0.350"),
-                Decimal("17.500"),
+                trust_score * Decimal("0.350"),
             ),
             TrustFactorResult(
                 "device_health",
                 "partially_healthy",
-                Decimal("50"),
+                trust_score,
                 Decimal("0.300"),
-                Decimal("15.000"),
+                trust_score * Decimal("0.300"),
             ),
             TrustFactorResult(
                 "location_normality",
                 "unavailable",
-                Decimal("50"),
+                trust_score,
                 Decimal("0.200"),
-                Decimal("10.000"),
+                trust_score * Decimal("0.200"),
             ),
             TrustFactorResult(
                 "time_normality",
                 "within_normal_window",
-                Decimal("50"),
+                trust_score,
                 Decimal("0.150"),
-                Decimal("7.500"),
+                trust_score * Decimal("0.150"),
             ),
         ),
         decision=decision,  # type: ignore[arg-type]
@@ -293,7 +301,20 @@ def test_complete_pipeline_persists_eight_rows_atomically(
     migrated_test_database: ScratchDatabase,
     decision: str,
     expected_final: str | None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    policy_calls: list[tuple[Decimal, PolicyThresholds, PolicyDecisionResult]] = []
+    original_evaluate_policy = evaluate_policy_engine
+
+    def observe_policy_evaluation(
+        score: Decimal, thresholds: PolicyThresholds
+    ) -> PolicyDecisionResult:
+        result = original_evaluate_policy(score, thresholds)
+        policy_calls.append((score, thresholds, result))
+        return result
+
+    monkeypatch.setitem(gateway_service.__dict__, "evaluate_policy", observe_policy_evaluation)
+
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
         principal = AuthenticatedPrincipal(user_id, None, "USER")
@@ -316,6 +337,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert request.user_id == user_id
         assert request.resource_id == "ops-dashboard"
         assert request.initial_decision == decision
+        assert request.mfa_required is (decision == "STEP_UP")
         assert request.final_outcome == expected_final
         assert (request.resolved_at is not None) is (expected_final is not None)
         evaluation = await session.scalar(select(TrustEvaluation))
@@ -323,11 +345,30 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert evaluation.id == result.evaluation_id
         assert evaluation.access_request_id == request.id
         assert evaluation.policy_version_id == policy_id
+        assert len(policy_calls) == 1
+        evaluated_score, thresholds, decision_result = policy_calls[0]
+        assert evaluated_score == evaluation.trust_score
+        policy_version = await session.get(PolicyVersion, policy_id)
+        assert policy_version is not None and policy_version.is_active
+        assert thresholds == PolicyThresholds(
+            allow_threshold=policy_version.allow_threshold,
+            stepup_threshold=policy_version.stepup_threshold,
+        )
         assert await session.scalar(select(func.count()).select_from(Device)) == 1
         assert await session.scalar(select(func.count()).select_from(ContextSignal)) == 1
         assert await session.scalar(select(func.count()).select_from(TrustEvaluation)) == 1
         assert await session.scalar(select(func.count()).select_from(TrustFactor)) == 4
-        assert await session.scalar(select(func.count()).select_from(PolicyDecision)) == 1
+        policy_decision = await session.scalar(select(PolicyDecision))
+        assert policy_decision is not None
+        assert decision_result.decision == decision
+        assert policy_decision.decision == decision_result.decision
+        assert policy_decision.decision_reason == decision_result.decision_reason
+        assert decision_result.trust_score == evaluation.trust_score
+        assert decision_result.allow_threshold == thresholds.allow_threshold
+        assert decision_result.stepup_threshold == thresholds.stepup_threshold
+        assert policy_decision.access_request_id == request.id
+        assert policy_decision.trust_evaluation_id == evaluation.id
+        assert policy_decision.policy_version_id == policy_id
         device = await session.get(Device, request.device_id)
         assert device is not None
         assert device.user_id == user_id
@@ -352,20 +393,75 @@ def test_complete_pipeline_persists_eight_rows_atomically(
     migrated_test_database.run_in_transaction(exercise)
 
 
+def test_complete_result_policy_mismatch_fails_safe_without_gateway_persistence(
+    migrated_test_database: ScratchDatabase,
+) -> None:
+    user_id = uuid4()
+    email = f"policy-mismatch-{user_id}@integration.test"
+    engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+
+    async def create_profile() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
+                {"id": user_id, "email": email},
+            )
+
+    async def remove_profile() -> None:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM public.profiles WHERE id = :id"), {"id": user_id}
+            )
+            await connection.execute(text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id})
+
+    asyncio.run(create_profile())
+    try:
+
+        async def exercise(session: AsyncSession) -> None:
+            active_policy_id = await session.scalar(
+                select(PolicyVersion.id).where(PolicyVersion.version_label == "POL-1.0")
+            )
+            assert active_policy_id is not None
+            profile = await session.get(Profile, user_id)
+            assert profile is not None
+            with pytest.raises(PipelineExecutionError, match="Access evaluation is unavailable"):
+                await access_gateway(
+                    session=session,
+                    principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                    resource=get_protected_resource("ops-dashboard"),
+                    device_token=_RAW_DEVICE_TOKEN,
+                    client_ip="192.0.2.13",
+                    user_agent="test",
+                    pipeline=CompleteTestPipeline(_complete_result(uuid4(), "ALLOW")),
+                    clock=FixedClock(_NOW),
+                )
+
+            for model in _APPLICATION_MODELS:
+                assert await session.scalar(select(func.count()).select_from(model)) == 0
+            event = await session.scalar(select(SecurityEvent))
+            assert event is not None
+            assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+            assert event.actor_id == user_id
+            assert event.decision == "BLOCK"
+            assert event.details == {}
+
+        migrated_test_database.run_in_transaction(exercise)
+    finally:
+        try:
+            asyncio.run(remove_profile())
+        finally:
+            asyncio.run(engine.dispose())
+
+
 def test_failure_after_staging_records_rolls_back_everything(
     migrated_test_database: ScratchDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    original_add_many = TrustFactorRepository.add_many
-
-    def fail_after_factors_are_staged(
-        repository: TrustFactorRepository,
-        factors: object,
-    ) -> None:
-        original_add_many(repository, factors)  # type: ignore[arg-type]
+    def fail_after_policy_decision_is_staged(*args: object, **kwargs: object) -> None:
+        del args, kwargs
         raise RuntimeError("private test persistence failure")
 
-    monkeypatch.setattr(TrustFactorRepository, "add_many", fail_after_factors_are_staged)
+    monkeypatch.setattr(gateway_service, "record_event", fail_after_policy_decision_is_staged)
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
@@ -383,6 +479,7 @@ def test_failure_after_staging_records_rolls_back_everything(
 
         for model in _ALL_GATEWAY_MODELS:
             assert await session.scalar(select(func.count()).select_from(model)) == 0
+        assert await session.scalar(select(func.count()).select_from(PolicyDecision)) == 0
 
     migrated_test_database.run_in_transaction(exercise)
 

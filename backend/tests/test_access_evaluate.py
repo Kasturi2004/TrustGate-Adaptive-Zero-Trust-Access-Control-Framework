@@ -133,6 +133,8 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
             "location_normality": 0.20,
             "time_normality": 0.15,
         },
+        allow_threshold=Decimal("70.00"),
+        stepup_threshold=Decimal("40.00"),
         is_active=True,
     )
 
@@ -182,7 +184,7 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
                     last_user_agent_version=context_snapshot.device_health.browser_version,
                 ),
                 context=context_snapshot,
-                policy_version_id=UUID("b8ce345d-9c2b-48e2-928f-7d5abdd19f1c"),
+                policy_version_id=active_policy.id,
                 trust_score=Decimal("50.00"),
                 risk_classification="MEDIUM",
                 factors=(
@@ -215,9 +217,9 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
                         Decimal("7.500"),
                     ),
                 ),
-                decision="STEP_UP",
-                decision_reason="Test pipeline only.",
-                explanation="Additional verification is required.",
+                decision="BLOCK",
+                decision_reason="test pipeline decision",
+                explanation="The request was blocked.",
             )
 
     pipeline = SnapshotPipeline()
@@ -232,7 +234,7 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     )
 
     assert response.status_code == 200
-    assert response.json()["decision"] == "STEP_UP"
+    assert response.json()["decision"] == "BLOCK"
     assert pipeline.snapshot is not None
     assert pipeline.snapshot.client_ip == IPv4Address("127.0.0.1")
     assert pipeline.snapshot.location_normality.category == "UNAVAILABLE"
@@ -361,8 +363,8 @@ def test_trust_evaluation_failure_records_only_sanitized_block_event(
                     ),
                 ),
                 decision="ALLOW",
-                decision_reason="Test fixture only.",
-                explanation="Test fixture only.",
+                decision_reason="test pipeline decision",
+                explanation="The request was allowed.",
             )
 
     application = cast(Any, client.app)

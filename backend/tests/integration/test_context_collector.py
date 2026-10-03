@@ -5,16 +5,20 @@ from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address
 from uuid import UUID, uuid4
 
+import app.services.access_gateway as gateway_service
+import pytest
 from app.api.deps import AuthenticatedPrincipal
 from app.core.clock import FixedClock
 from app.core.config import Settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
+from app.db.models.policy_decision import PolicyDecision
 from app.db.models.policy_version import PolicyVersion
 from app.db.models.profile import Profile
 from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.models.trust_factor import TrustFactor
+from app.schemas.policy import PolicyDecisionResult, PolicyThresholds
 from app.services.access_gateway import (
     CompletePipelineResult,
     DeviceResult,
@@ -25,6 +29,7 @@ from app.services.access_gateway import (
 from app.services.context.collector import ContextSnapshot
 from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import GeoRegion
+from app.services.policy_engine import evaluate_policy as evaluate_policy_engine
 from app.services.protected_resource import get_protected_resource
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,15 +148,27 @@ def _result(snapshot: ContextSnapshot, policy_version_id: UUID) -> CompletePipel
                 Decimal("7.500"),
             ),
         ),
-        decision="BLOCK",
-        decision_reason="Synthetic integration fixture only.",
-        explanation="Blocked by a synthetic integration pipeline.",
+        decision="ALLOW",
+        decision_reason="integration test pipeline result",
+        explanation="Synthetic result generated only by the integration test pipeline.",
     )
 
 
 def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
     migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    policy_calls: list[tuple[Decimal, PolicyThresholds, PolicyDecisionResult]] = []
+    original_evaluate_policy = evaluate_policy_engine
+
+    def observe_policy_evaluation(
+        score: Decimal, thresholds: PolicyThresholds
+    ) -> PolicyDecisionResult:
+        result = original_evaluate_policy(score, thresholds)
+        policy_calls.append((score, thresholds, result))
+        return result
+
+    monkeypatch.setitem(gateway_service.__dict__, "evaluate_policy", observe_policy_evaluation)
     user_id = uuid4()
     device_id = uuid4()
     device_hash = device_token_hash(
@@ -197,11 +214,16 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
             ]
         )
         await session.flush()
-        policy_id = await session.scalar(
-            select(PolicyVersion.id).where(PolicyVersion.version_label == "POL-1.0")
+        active_policy = await session.scalar(
+            select(PolicyVersion).where(
+                PolicyVersion.version_label == "POL-1.0", PolicyVersion.is_active.is_(True)
+            )
         )
-        assert policy_id is not None
-        pipeline = CollectorPipeline(policy_id)
+        assert active_policy is not None
+        active_policy_id = active_policy.id
+        active_allow_threshold = active_policy.allow_threshold
+        active_stepup_threshold = active_policy.stepup_threshold
+        pipeline = CollectorPipeline(active_policy_id)
         result = await access_gateway(
             session=session,
             principal=AuthenticatedPrincipal(user_id, profile.email, "USER"),
@@ -245,9 +267,29 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert signal.time_raw == "within_normal_window"
         assert signal.raw_context == dict(snapshot.raw_context)
         assert signal.captured_at == _NOW
-        assert result.decision == "BLOCK"
-        assert evaluation.policy_version_id == pipeline.policy_version_id
+        assert result.decision == "ALLOW"
+        assert request.initial_decision == "ALLOW"
+        assert evaluation.policy_version_id == active_policy_id
         assert evaluation.trust_score == Decimal("100.00")
+        assert len(policy_calls) == 1
+        evaluated_score, thresholds, decision_result = policy_calls[0]
+        assert evaluated_score == evaluation.trust_score
+        assert thresholds == PolicyThresholds(
+            allow_threshold=active_allow_threshold,
+            stepup_threshold=active_stepup_threshold,
+        )
+        policy_decision = await session.scalar(
+            select(PolicyDecision).where(PolicyDecision.access_request_id == request.id)
+        )
+        assert policy_decision is not None
+        assert decision_result.decision == "ALLOW"
+        assert policy_decision.decision == decision_result.decision
+        assert policy_decision.decision_reason == decision_result.decision_reason
+        assert policy_decision.trust_evaluation_id == evaluation.id
+        assert policy_decision.policy_version_id == active_policy_id
+        assert policy_decision.access_request_id == request.id
+        assert request.initial_decision == decision_result.decision
+        assert request.mfa_required is False
         factors = list(
             (
                 await session.scalars(
