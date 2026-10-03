@@ -48,6 +48,7 @@ vi.mock("react-router-dom", async (importOriginal) => {
 });
 
 import { SignupPage } from "./SignupPage.tsx";
+import { AuthPageLayout } from "../components/AuthPageLayout.tsx";
 
 interface UiNode {
   type: unknown;
@@ -139,6 +140,16 @@ afterEach(() => {
 });
 
 describe("SignupPage", () => {
+  it("uses the shared Figma-inspired authentication layout", () => {
+    const root = renderSignup();
+    expect(root.type).toBe(AuthPageLayout);
+    expect(root.props).toMatchObject({
+      eyebrow: "Get started",
+      title: "Create your account",
+    });
+    expect(findNode(root, (candidate) => candidate.type === "form")).toBeDefined();
+  });
+
   it("renders labeled email, password, and confirmation fields", () => {
     const root = renderSignup();
 

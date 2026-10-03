@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { apiRequest } from "../api/client.ts";
+import { DecisionPresentation } from "../components/DecisionPresentation.tsx";
 import { isAccessEvaluationResponse, type AccessEvaluationResponse } from "../types/access.ts";
 
 const RESOURCE_ID = "ops-dashboard";
@@ -42,47 +43,91 @@ export function RequestAccessPage() {
   };
 
   return (
-    <section className="panel access-request-panel" aria-labelledby="access-request-title">
-      <h1 id="access-request-title">Request Access</h1>
-      <p className="lede">
-        Request access to <strong>Operations Dashboard</strong>.
-      </p>
-      <p className="access-resource-id">
-        Resource ID: <code>{RESOURCE_ID}</code>
-      </p>
-      <button
-        className="login-submit access-request-button"
-        type="button"
-        onClick={requestAccess}
-        disabled={loading}
-      >
-        {loading ? "Requesting access…" : "Request Access"}
-      </button>
+    <div className="request-page">
+      <header className="page-heading">
+        <div>
+          <span className="page-eyebrow">Access gateway</span>
+          <h1 id="access-request-title">Request protected access</h1>
+          <p>TrustGate will evaluate your request before access is approved.</p>
+        </div>
+      </header>
+      <div className="request-layout">
+        <section className="panel access-request-panel" aria-labelledby="request-resource-title">
+          <div className="request-section-heading">
+            <span className="request-section-number">01</span>
+            <div>
+              <h2 id="request-resource-title">Protected resource</h2>
+              <p>Choose a resource for this access request.</p>
+            </div>
+          </div>
+          <div className="request-resource-card">
+            <span className="request-resource-icon" aria-hidden="true">
+              ▧
+            </span>
+            <span>
+              <strong>Operations Dashboard</strong>
+              <small>Protected TrustGate resource</small>
+            </span>
+            <span className="resource-lock" aria-label="Protected">
+              ◆
+            </span>
+          </div>
+          <p className="access-resource-id">
+            Resource ID <code>{RESOURCE_ID}</code>
+          </p>
+          <div className="request-safety-note">
+            <span aria-hidden="true">◇</span>
+            <p>The backend evaluates the request and returns the access decision.</p>
+          </div>
+          <button
+            className="login-submit access-request-button"
+            type="button"
+            onClick={requestAccess}
+            disabled={loading}
+          >
+            {loading ? "Requesting access…" : "Request Access"}
+            <span aria-hidden="true">→</span>
+          </button>
 
-      {error && (
-        <p className="login-error" role="alert">
-          {error}
-        </p>
-      )}
-
-      {evaluation && (
-        <section className="access-result" aria-live="polite">
-          {evaluation.decision === "ALLOW" && (
-            <h2 className="access-result-allow">Access allowed</h2>
-          )}
-          {evaluation.decision === "STEP_UP" && <h2>Additional verification required</h2>}
-          {evaluation.decision === "BLOCK" && <h2>Access blocked</h2>}
-          <p>{evaluation.explanation}</p>
-          {evaluation.decision === "ALLOW" && (
-            <p>
-              Evaluation ID: <code>{evaluation.evaluation_id}</code>
+          {error && (
+            <p className="login-error" role="alert">
+              {error}
             </p>
           )}
-          {evaluation.decision === "STEP_UP" && evaluation.mfa_challenge_id !== null && (
-            <p>An MFA challenge was created. Verification will be available in a later phase.</p>
-          )}
+
+          {evaluation && <DecisionPresentation evaluation={evaluation} />}
         </section>
-      )}
-    </section>
+        <aside className="request-explanation">
+          <span className="page-eyebrow">How it works</span>
+          <h2>Authentication is only the first check.</h2>
+          <p>
+            Each request is evaluated by TrustGate before the protected resource can be accessed.
+          </p>
+          <ol>
+            <li>
+              <span>1</span>
+              <div>
+                <strong>Submit request</strong>
+                <small>Your request is sent to the access gateway.</small>
+              </div>
+            </li>
+            <li>
+              <span>2</span>
+              <div>
+                <strong>Backend evaluation</strong>
+                <small>The backend determines the authorization decision.</small>
+              </div>
+            </li>
+            <li>
+              <span>3</span>
+              <div>
+                <strong>View decision</strong>
+                <small>The result explains the next safe action.</small>
+              </div>
+            </li>
+          </ol>
+        </aside>
+      </div>
+    </div>
   );
 }

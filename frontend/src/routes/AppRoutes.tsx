@@ -28,7 +28,7 @@ export function AppRoutes() {
           </AuthEntryRoute>
         }
       />
-      <Route path="/dashboard" element={<PlaceholderPage title="Dashboard" />} />
+      <Route path="/dashboard" element={<HomePage />} />
       <Route
         path="/access"
         element={

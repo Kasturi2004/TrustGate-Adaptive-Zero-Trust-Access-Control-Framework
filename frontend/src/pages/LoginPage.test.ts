@@ -54,6 +54,7 @@ vi.mock("react-router-dom", async (importOriginal) => {
 });
 
 import { LoginPage } from "./LoginPage.tsx";
+import { AuthPageLayout } from "../components/AuthPageLayout.tsx";
 
 interface UiNode {
   type: unknown;
@@ -81,6 +82,13 @@ function findNode(node: unknown, predicate: (candidate: UiNode) => boolean): UiN
   const candidate = node as UiNode;
   if (predicate(candidate)) return candidate;
   return findNode(candidate.props.children, predicate);
+}
+
+function textContent(node: unknown): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textContent).join("");
+  if (typeof node !== "object" || node === null || !("props" in node)) return "";
+  return textContent((node as UiNode).props.children);
 }
 
 function requiredNode(root: UiNode, elementType: string): UiNode {
@@ -144,6 +152,17 @@ afterEach(() => {
 });
 
 describe("LoginPage", () => {
+  it("uses the shared Figma-inspired authentication layout and retains signup navigation", () => {
+    const root = renderLogin();
+    expect(root.type).toBe(AuthPageLayout);
+    expect(root.props).toMatchObject({
+      eyebrow: "Secure sign in",
+      title: "Welcome back",
+    });
+    expect(findNode(root, (candidate) => candidate.type === "form")).toBeDefined();
+    expect(textContent(root.props.footer)).toContain("Don’t have an account?");
+  });
+
   it("renders labeled email and password inputs with autocomplete", () => {
     const root = renderLogin();
 

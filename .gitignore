@@ -46,3 +46,5 @@ Thumbs.db
 !.vscode/extensions.json
 # TrustGate specification documents
 docs/
+#figma design file
+references/

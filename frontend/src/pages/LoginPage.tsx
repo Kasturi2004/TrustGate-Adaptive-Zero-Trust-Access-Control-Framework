@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest } from "../api/client.ts";
+import { AuthPageLayout } from "../components/AuthPageLayout.tsx";
 import { supabase } from "../lib/supabase.ts";
 
 interface TokenResponse {
@@ -116,9 +117,16 @@ export function LoginPage() {
   }
 
   return (
-    <section className="panel login-panel">
-      <h1>Sign in to TrustGate</h1>
-      <p className="lede">Use your account to continue.</p>
+    <AuthPageLayout
+      eyebrow="Secure sign in"
+      title="Welcome back"
+      description="Sign in to continue to TrustGate."
+      footer={
+        <p className="login-signup">
+          Don’t have an account? <Link to="/signup">Sign up</Link>
+        </p>
+      }
+    >
       <form className="login-form" onSubmit={handleSubmit}>
         <label htmlFor="login-email">
           Email
@@ -149,13 +157,10 @@ export function LoginPage() {
             {error}
           </p>
         ) : null}
-        <button className="login-submit" type="submit" disabled={submitting}>
+        <button className="login-submit auth-submit" type="submit" disabled={submitting}>
           {submitting ? "Signing in…" : "Sign in"}
         </button>
       </form>
-      <p className="login-signup">
-        Don’t have an account? <Link to="/signup">Sign up</Link>
-      </p>
-    </section>
+    </AuthPageLayout>
   );
 }

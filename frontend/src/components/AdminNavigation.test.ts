@@ -33,6 +33,7 @@ describe("admin navigation visibility", () => {
     expect(textContent(Header())).toContain("Admin");
     expect(textContent(HomePage())).toContain("Security overview");
     expect(textContent(HomePage())).toContain("Security events");
+    expect(textContent(HomePage())).toContain("Quick access");
   });
 
   it("hides admin links for a USER profile", () => {
@@ -42,5 +43,6 @@ describe("admin navigation visibility", () => {
     expect(textContent(Header())).not.toContain("Admin");
     expect(textContent(HomePage())).not.toContain("Security overview");
     expect(textContent(HomePage())).not.toContain("Security events");
+    expect(textContent(HomePage())).toContain("Every access request is evaluated independently");
   });
 });

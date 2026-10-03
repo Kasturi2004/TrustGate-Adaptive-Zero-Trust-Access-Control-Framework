@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "../lib/supabase.ts";
+import { AuthPageLayout } from "../components/AuthPageLayout.tsx";
 
 const SIGNUP_ERROR = "Unable to create your account right now. Please try again.";
 const CONFIRMATION_MESSAGE =
@@ -69,9 +70,16 @@ export function SignupPage() {
   }
 
   return (
-    <section className="panel login-panel">
-      <h1>Create your TrustGate account</h1>
-      <p className="lede">Create an account to continue.</p>
+    <AuthPageLayout
+      eyebrow="Get started"
+      title="Create your account"
+      description="Set up your TrustGate account to continue."
+      footer={
+        <p className="login-signup">
+          Already have an account? <Link to="/login">Sign in</Link>
+        </p>
+      }
+    >
       <form className="login-form" onSubmit={handleSubmit}>
         <label htmlFor="signup-email">
           Email
@@ -119,13 +127,10 @@ export function SignupPage() {
             {success}
           </p>
         ) : null}
-        <button className="login-submit" type="submit" disabled={submitting}>
+        <button className="login-submit auth-submit" type="submit" disabled={submitting}>
           {submitting ? "Creating account…" : "Create account"}
         </button>
       </form>
-      <p className="login-signup">
-        Already have an account? <Link to="/login">Sign in</Link>
-      </p>
-    </section>
+    </AuthPageLayout>
   );
 }

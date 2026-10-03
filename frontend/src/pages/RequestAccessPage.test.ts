@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { ComponentProps } from "react";
 
 const { hookHarness, apiRequestMock, uuidMock } = vi.hoisted(() => ({
   hookHarness: {
@@ -31,8 +32,9 @@ vi.mock("react", async (importOriginal) => {
 
 vi.mock("../api/client.ts", () => ({ apiRequest: apiRequestMock }));
 
-import { Route } from "react-router-dom";
+import { Link, Route } from "react-router-dom";
 import { ProtectedRoute } from "../auth/ProtectedRoute.tsx";
+import { DecisionPresentation } from "../components/DecisionPresentation.tsx";
 import type { ApiRequestOptions } from "../api/client.ts";
 import { AppRoutes } from "../routes/AppRoutes.tsx";
 import type { AccessDecision, AccessEvaluationResponse } from "../types/access.ts";
@@ -48,7 +50,24 @@ const PRIVATE_ERROR = "secret-token private stack trace";
 
 function renderPage(): UiNode {
   hookHarness.cursor = 0;
-  return RequestAccessPage() as UiNode;
+  return expandDecisionPresentation(RequestAccessPage()) as UiNode;
+}
+
+function expandDecisionPresentation(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(expandDecisionPresentation);
+  if (typeof node !== "object" || node === null || !("type" in node) || !("props" in node)) {
+    return node;
+  }
+  const candidate = node as UiNode;
+  if (candidate.type === DecisionPresentation) {
+    return expandDecisionPresentation(
+      DecisionPresentation(candidate.props as ComponentProps<typeof DecisionPresentation>),
+    );
+  }
+  return {
+    ...candidate,
+    props: { ...candidate.props, children: expandDecisionPresentation(candidate.props.children) },
+  };
 }
 
 function findNode(node: unknown, predicate: (candidate: UiNode) => boolean): UiNode | undefined {
@@ -97,10 +116,26 @@ function responseFor(
     JSON.stringify({
       evaluation_id: "evaluation-test-id",
       decision,
-      explanation: `Backend explanation for ${decision}.`,
+      explanation:
+        decision === "ALLOW"
+          ? "Access is approved."
+          : decision === "STEP_UP"
+            ? "Additional verification is required to continue."
+            : "Access is not approved.",
       mfa_challenge_id: null,
+      trust_score: 87,
+      policy_threshold: 80,
+      policy_weights: { device: 0.4 },
+      policy_version_id: "private-policy-id",
+      decision_reason: "private-decision-reason",
+      exception_details: "private-exception-details",
+      raw_context_signals: {
+        device_token: "private-device-token",
+        user_agent: "private-user-agent",
+      },
+      factor_calculations: { identity: 0.95 },
       ...overrides,
-    } satisfies AccessEvaluationResponse),
+    }),
     { status: 200 },
   );
 }
@@ -118,8 +153,18 @@ afterEach(() => {
 });
 
 describe("RequestAccessPage", () => {
+  it("keeps the backend decision contract free of prototype-only values", () => {
+    expectTypeOf<AccessDecision>().toEqualTypeOf<"ALLOW" | "STEP_UP" | "BLOCK">();
+  });
+
   it("renders the placeholder resource action and remains behind ProtectedRoute", () => {
     const page = renderPage();
+    expect(
+      findNode(page, (candidate) => candidate.props.className === "request-page"),
+    ).toBeDefined();
+    expect(
+      findNode(page, (candidate) => candidate.props.className === "request-layout"),
+    ).toBeDefined();
     expect(nodeText(page)).toContain("Operations Dashboard");
     expect(nodeText(page)).toContain("ops-dashboard");
     expect(nodeText(page)).toContain("Request Access");
@@ -149,12 +194,17 @@ describe("RequestAccessPage", () => {
   });
 
   it.each([
-    ["ALLOW", "Access allowed"],
-    ["STEP_UP", "Additional verification required"],
-    ["BLOCK", "Access blocked"],
+    ["ALLOW", "Access granted", "Access is approved.", "decision-allow"],
+    [
+      "STEP_UP",
+      "Additional verification required",
+      "Additional verification is required to continue.",
+      "decision-step",
+    ],
+    ["BLOCK", "Access denied", "Access is not approved.", "decision-block"],
   ] as const)(
     "renders the backend %s decision without recalculating it",
-    async (decision, label) => {
+    async (decision, label, explanation, tone) => {
       apiRequestMock.mockResolvedValue(
         responseFor(decision, {
           mfa_challenge_id: decision === "STEP_UP" ? "challenge-private-id" : null,
@@ -165,17 +215,29 @@ describe("RequestAccessPage", () => {
 
       const result = renderPage();
       expect(nodeText(result)).toContain(label);
-      expect(nodeText(result)).toContain(`Backend explanation for ${decision}.`);
-      if (decision === "ALLOW") {
-        expect(nodeText(result)).toContain("evaluation-test-id");
-      } else {
-        expect(nodeText(result)).not.toContain("evaluation-test-id");
-      }
+      if (decision === "ALLOW") expect(nodeText(result)).toContain("Your request was approved.");
       if (decision === "STEP_UP") {
-        expect(nodeText(result)).toContain("An MFA challenge was created.");
+        expect(nodeText(result)).toContain("Additional verification is required to continue.");
+      }
+      if (decision === "BLOCK") {
+        expect(nodeText(result)).toContain("Access is not approved.");
+        expect(findNode(result, (candidate) => candidate.type === Link)?.props.to).toBe(
+          "/dashboard",
+        );
+      }
+      expect(nodeText(result)).toContain(explanation);
+      const presentation = findNode(result, (candidate) =>
+        String(candidate.props.className ?? "").includes("decision-presentation"),
+      );
+      expect(presentation?.props.className).toContain(tone);
+      expect(nodeText(result)).not.toContain("evaluation-test-id");
+      if (decision === "STEP_UP") {
+        expect(nodeText(result)).toContain("Verify with authenticator");
         expect(nodeText(result)).not.toContain("challenge-private-id");
       }
-      expect(nodeText(result)).not.toMatch(/trust score|trust factor|threshold/i);
+      expect(nodeText(result)).not.toMatch(
+        /trust score|threshold|weight|policy id|private-policy-id|decision_reason|private-decision-reason|exception|private-exception-details|private-device-token|private-user-agent|factor calculation|challenge-private-id/i,
+      );
     },
   );
 
