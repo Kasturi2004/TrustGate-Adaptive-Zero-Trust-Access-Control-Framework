@@ -43,6 +43,7 @@ from app.schemas.trust import (
 )
 from app.services.context.collector import ContextSnapshot, collect_context_snapshot
 from app.services.context.location import GeoResolver
+from app.services.decision_explanation import explain_decision
 from app.services.policy_engine import evaluate_policy
 from app.services.protected_resource import ProtectedResource
 from app.services.security_events import record_event
@@ -369,6 +370,8 @@ async def access_gateway(
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         raise PipelineExecutionError("Access evaluation is unavailable")
 
+    final_decision = policy_decision.decision
+
     now = (
         evaluated.context.captured_at
         if isinstance(evaluated.context, ContextSnapshot)
@@ -475,19 +478,19 @@ async def access_gateway(
 
         record_event(
             session,
-            event_type=_ACCESS_EVENT_TYPES[evaluated.decision],
+            event_type=_ACCESS_EVENT_TYPES[final_decision],
             actor_id=principal.id,
             access_request_id=access_request_id,
             trust_evaluation_id=evaluation_id,
-            decision=evaluated.decision,
+            decision=final_decision,
             risk_category=evaluated.risk_classification,
         )
         await session.flush()
 
-        if evaluated.decision in {"ALLOW", "BLOCK"}:
+        if final_decision in {"ALLOW", "BLOCK"}:
             resolved_request = await AccessRequestRepository(session).set_final_outcome(
                 access_request_id,
-                evaluated.decision,
+                final_decision,
             )
             if resolved_request is None:
                 raise RuntimeError("Persisted access request could not be resolved")
@@ -500,6 +503,6 @@ async def access_gateway(
 
     return AccessGatewayResponse(
         evaluation_id=evaluation_id,
-        decision=evaluated.decision,
-        explanation=evaluated.explanation,
+        decision=final_decision,
+        explanation=explain_decision(final_decision),
     )

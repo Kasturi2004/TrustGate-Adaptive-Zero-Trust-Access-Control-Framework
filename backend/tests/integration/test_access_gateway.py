@@ -37,6 +37,7 @@ from app.services.access_gateway import (
 )
 from app.services.context.collector import ContextSnapshot
 from app.services.context.location import GeoRegion
+from app.services.decision_explanation import explain_decision
 from app.services.policy_engine import evaluate_policy as evaluate_policy_engine
 from app.services.protected_resource import get_protected_resource
 from sqlalchemy import func, select, text
@@ -340,6 +341,8 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert request.mfa_required is (decision == "STEP_UP")
         assert request.final_outcome == expected_final
         assert (request.resolved_at is not None) is (expected_final is not None)
+        assert result.decision == decision
+        assert result.explanation == explain_decision(decision)
         evaluation = await session.scalar(select(TrustEvaluation))
         assert evaluation is not None
         assert evaluation.id == result.evaluation_id
@@ -375,6 +378,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert device.recognized_at is None
         assert device.device_hash != _RAW_DEVICE_TOKEN
         assert _RAW_DEVICE_TOKEN not in repr(device.device_hash)
+        assert _GATEWAY_USER_AGENT not in repr(device)
         event = await session.scalar(select(SecurityEvent))
         assert event is not None
         assert (
@@ -389,6 +393,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert event.access_request_id == request.id
         assert event.trust_evaluation_id == evaluation.id
         assert _RAW_DEVICE_TOKEN not in repr(event.details)
+        assert _GATEWAY_USER_AGENT not in repr(event.details)
 
     migrated_test_database.run_in_transaction(exercise)
 
