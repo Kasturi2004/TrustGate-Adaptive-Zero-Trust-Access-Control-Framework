@@ -12,7 +12,8 @@ from uuid import UUID
 import app.services.access_gateway as access_gateway_service
 import pytest
 from app.api import deps
-from app.api.deps import AuthenticatedPrincipal, require_user
+from app.api.deps import AuthenticatedPrincipal, get_clock, require_user
+from app.core.clock import FixedClock
 from app.core.config import Settings, get_settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
@@ -222,6 +223,7 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     pipeline = SnapshotPipeline()
     application = cast(Any, client.app)
     application.dependency_overrides[get_security_pipeline] = lambda: pipeline
+    application.dependency_overrides[get_clock] = lambda: FixedClock(_NOW)
 
     response = client.post(
         "/access/evaluate",
