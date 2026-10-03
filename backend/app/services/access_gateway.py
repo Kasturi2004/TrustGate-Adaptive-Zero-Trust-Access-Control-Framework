@@ -27,6 +27,7 @@ from app.db.repositories.policy_decision import PolicyDecisionRepository
 from app.db.repositories.policy_version import PolicyVersionRepository
 from app.db.repositories.trust_evaluation import TrustEvaluationRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
+from app.schemas.policy import PolicyDecisionResult, PolicyThresholds
 from app.schemas.trust import (
     DeviceFamiliaritySignal,
     DeviceHealthSignal,
@@ -42,6 +43,7 @@ from app.schemas.trust import (
 )
 from app.services.context.collector import ContextSnapshot, collect_context_snapshot
 from app.services.context.location import GeoResolver
+from app.services.policy_engine import evaluate_policy
 from app.services.protected_resource import ProtectedResource
 from app.services.security_events import record_event
 from app.services.trust_engine import evaluate as evaluate_trust
@@ -278,6 +280,8 @@ async def access_gateway(
     no incomplete access-request/evaluation rows are written.
     """
     trust_evaluation: TrustEvaluationResult | None = None
+    policy_version_id: UUID | None = None
+    policy_decision: PolicyDecisionResult | None = None
     try:
         context_snapshot: ContextSnapshot | None = None
         if request is not None or profile is not None or geo_resolver is not None:
@@ -305,10 +309,11 @@ async def access_gateway(
             raise TypeError("Security pipeline returned an unsupported result")
         if isinstance(evaluated, CompletePipelineResult):
             _validate_complete_result(evaluated, device_token)
+            active_policy = await PolicyVersionRepository(session).get_active()
+            if active_policy is None:
+                raise RuntimeError("No active trust policy is configured")
+            policy_version_id = active_policy.id
             if context_snapshot is not None:
-                active_policy = await PolicyVersionRepository(session).get_active()
-                if active_policy is None:
-                    raise RuntimeError("No active trust policy is configured")
                 policy_weights = TrustWeights.model_validate(
                     {
                         name: Decimal(str(value))
@@ -327,7 +332,7 @@ async def access_gateway(
                 evaluated = replace(
                     evaluated,
                     context=context_snapshot,
-                    policy_version_id=active_policy.id,
+                    policy_version_id=policy_version_id,
                     trust_score=trust_evaluation.trust_score,
                     factors=tuple(
                         TrustFactorResult(
@@ -340,6 +345,13 @@ async def access_gateway(
                         for factor in trust_evaluation.factors
                     ),
                 )
+            elif evaluated.policy_version_id != policy_version_id:
+                raise RuntimeError("Trust result policy does not match the active policy")
+            policy_thresholds = PolicyThresholds(
+                allow_threshold=active_policy.allow_threshold,
+                stepup_threshold=active_policy.stepup_threshold,
+            )
+            policy_decision = evaluate_policy(evaluated.trust_score, policy_thresholds)
     except Exception:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         raise PipelineExecutionError("Access evaluation is unavailable") from None
@@ -352,6 +364,10 @@ async def access_gateway(
             decision="BLOCK",
             explanation=evaluated.explanation,
         )
+
+    if policy_version_id is None or policy_decision is None:
+        await _persist_failsafe_event(session, principal.id, rollback_first=True)
+        raise PipelineExecutionError("Access evaluation is unavailable")
 
     now = (
         evaluated.context.captured_at
@@ -383,8 +399,8 @@ async def access_gateway(
             resource_id=resource.resource_id,
             source_ip=ip_address(client_ip),
             resolved_region=evaluated.context.resolved_region,
-            initial_decision=evaluated.decision,
-            mfa_required=evaluated.decision == "STEP_UP",
+            initial_decision=policy_decision.decision,
+            mfa_required=policy_decision.decision == "STEP_UP",
             requested_at=now,
         )
         AccessRequestRepository(session).add(access_request)
@@ -409,7 +425,7 @@ async def access_gateway(
                 session,
                 result=trust_evaluation,
                 access_request_id=access_request_id,
-                policy_version_id=evaluated.policy_version_id,
+                policy_version_id=policy_version_id,
                 risk_classification=evaluated.risk_classification,
                 evaluated_at=now,
             )
@@ -419,7 +435,7 @@ async def access_gateway(
                 TrustEvaluation(
                     id=evaluation_id,
                     access_request_id=access_request_id,
-                    policy_version_id=evaluated.policy_version_id,
+                    policy_version_id=policy_version_id,
                     trust_score=evaluated.trust_score,
                     risk_classification=evaluated.risk_classification,
                     status="COMPLETE",
@@ -449,9 +465,9 @@ async def access_gateway(
                 id=uuid4(),
                 access_request_id=access_request_id,
                 trust_evaluation_id=evaluation_id,
-                policy_version_id=evaluated.policy_version_id,
-                decision=evaluated.decision,
-                decision_reason=evaluated.decision_reason,
+                policy_version_id=policy_version_id,
+                decision=policy_decision.decision,
+                decision_reason=policy_decision.decision_reason,
                 decided_at=now,
             )
         )
