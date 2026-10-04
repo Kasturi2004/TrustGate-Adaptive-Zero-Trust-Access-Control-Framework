@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     # Dedicated HMAC key for opaque login account rate-limit identifiers.
     rate_limit_key_secret: str | None = None
     security_event_key_secret: str | None = None
+    # Dedicated key for encrypting TOTP secrets at rest; never reuse an HMAC key.
+    totp_secret_encryption_key: SecretStr | None = None
     trusted_proxy_hops: int = Field(default=0, ge=0)
     smtp_host: str | None = None
     smtp_port: int | None = None
@@ -67,6 +69,7 @@ class Settings(BaseSettings):
         "device_hash_secret",
         "rate_limit_key_secret",
         "security_event_key_secret",
+        "totp_secret_encryption_key",
         "smtp_host",
         "smtp_user",
         "smtp_password",

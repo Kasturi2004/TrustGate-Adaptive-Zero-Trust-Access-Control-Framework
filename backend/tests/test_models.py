@@ -19,17 +19,18 @@ EXPECTED_TABLES = {
     "otp_challenges",
     "rate_limit_state",
     "security_events",
+    "mfa_credentials",
 }
 
 
-def test_metadata_contains_only_the_eleven_phase_two_tables() -> None:
+def test_metadata_contains_only_the_twelve_phase_two_tables() -> None:
     assert {table.name for table in Base.metadata.tables.values()} == EXPECTED_TABLES
     assert all(table.schema == "public" for table in Base.metadata.tables.values())
 
 
 def test_primary_key_definitions() -> None:
     for table in Base.metadata.tables.values():
-        if table.name != "rate_limit_state":
+        if table.name not in {"rate_limit_state", "mfa_credentials"}:
             primary_key = next(iter(table.primary_key.columns))
             assert primary_key.name == "id"
             assert isinstance(primary_key.type, PG_UUID)
@@ -44,6 +45,10 @@ def test_primary_key_definitions() -> None:
     rate_limit_key = Base.metadata.tables["public.rate_limit_state"].c.key
     assert rate_limit_key.primary_key
     assert isinstance(rate_limit_key.type, Text)
+
+    mfa_user_id = Base.metadata.tables["public.mfa_credentials"].c.user_id
+    assert mfa_user_id.primary_key
+    assert isinstance(mfa_user_id.type, PG_UUID)
 
 
 def test_audit_foreign_keys_and_delete_rules() -> None:
@@ -175,7 +180,7 @@ def test_model_metadata_import_does_not_create_a_database_engine() -> None:
         "side_effect=AssertionError); "
         "guard.start(); "
         "from app.db.models import target_metadata; "
-        "assert len(target_metadata.tables) == 11"
+        "assert len(target_metadata.tables) == 12"
     )
     environment = os.environ.copy()
     environment.pop("DATABASE_URL", None)

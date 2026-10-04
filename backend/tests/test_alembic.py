@@ -56,6 +56,7 @@ def test_alembic_has_the_initial_role_rls_audit_and_seed_revisions() -> None:
         "20260928_04_profile_auth_triggers.py",
         "20260928_05_security_events_append_only.py",
         "20260928_06_seed_pol_1_0.py",
+        "20261004_07_mfa_credentials.py",
     ]
     env_source = (BACKEND_ROOT / "alembic" / "env.py").read_text(encoding="utf-8")
     assert "from app.db.models import target_metadata" in env_source
