@@ -63,6 +63,7 @@ def test_mfa_migration_and_credential_integrity(
 
         loaded = await repository.get_by_user_id(user_id)
         assert loaded is not None
+        assert loaded is credential
         assert loaded.secret_ciphertext == ciphertext
         assert _TEST_TOTP_SECRET.encode() not in loaded.secret_ciphertext
         assert (
@@ -72,6 +73,17 @@ def test_mfa_migration_and_credential_integrity(
         assert loaded.verified_at == verified_at
         assert loaded.enabled is True
         assert await repository.get_by_user_id(uuid4()) is None
+
+        active_transaction = session.get_transaction()
+        assert active_transaction is not None
+        locked = await repository.get_by_user_id_for_update(user_id)
+        assert locked is loaded
+        assert session.get_transaction() is active_transaction
+
+        missing_user_id = uuid4()
+        await _create_auth_user(session, missing_user_id)
+        assert await repository.get_by_user_id_for_update(missing_user_id) is None
+        assert session.get_transaction() is active_transaction
 
         with pytest.raises(IntegrityError):
             async with session.begin_nested():
@@ -127,7 +139,8 @@ def test_mfa_credential_transaction_rolls_back(
 
     async def insert_credential(session: AsyncSession) -> None:
         await _create_auth_user(session, user_id)
-        MfaCredentialRepository(session).add(
+        repository = MfaCredentialRepository(session)
+        repository.add(
             MfaCredential(
                 user_id=user_id,
                 secret_ciphertext=encrypt_totp_secret(
@@ -144,6 +157,7 @@ def test_mfa_credential_transaction_rolls_back(
             )
             == 1
         )
+        assert await repository.get_by_user_id_for_update(user_id) is not None
 
     async def assert_rolled_back(session: AsyncSession) -> None:
         assert (

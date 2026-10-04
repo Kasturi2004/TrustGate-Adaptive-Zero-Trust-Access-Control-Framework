@@ -21,6 +21,7 @@ dependencies = [
   "slowapi==0.1.10",
   "ua-parser[regex]>=1.0.1,<2",
   "PyYAML>=6,<7",
+  "pyotp>=2.9,<3",
 ]
 
 [project.optional-dependencies]

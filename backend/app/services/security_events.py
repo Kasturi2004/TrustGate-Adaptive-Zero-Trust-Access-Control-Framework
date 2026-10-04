@@ -17,6 +17,9 @@ from app.db.repositories.security_event import SecurityEventRepository
 _EVENT_DETAIL_ALLOWLISTS: dict[str, frozenset[str]] = {
     "LOGIN_SUCCESS": frozenset({"email_identifier"}),
     "LOGIN_FAILURE": frozenset({"email_identifier"}),
+    "MFA_TOTP_ENROLLMENT_STARTED": frozenset(),
+    "MFA_TOTP_ENROLLMENT_VERIFICATION_FAILED": frozenset(),
+    "MFA_TOTP_ENROLLMENT_VERIFICATION_SUCCEEDED": frozenset(),
     "PIPELINE_DEGRADED_FAILSAFE": frozenset(),
     "UNAUTHORIZED_ACCESS_ATTEMPT": frozenset({"resource", "path", "method"}),
     "ADMIN_UNAUTHORIZED_ATTEMPT": frozenset({"attempted_role", "path", "method"}),
