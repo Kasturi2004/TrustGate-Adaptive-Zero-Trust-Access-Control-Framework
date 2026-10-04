@@ -1,6 +1,7 @@
 """Tests for opaque login rate-limit key construction."""
 
 import inspect
+from uuid import UUID
 
 import pytest
 from app.core.config import Settings
@@ -8,6 +9,8 @@ from app.core.rate_limit import (
     RateLimitKeyConfigurationError,
     account_rate_limit_key,
     ip_rate_limit_key,
+    mfa_ip_rate_limit_key,
+    mfa_user_rate_limit_key,
 )
 
 
@@ -85,3 +88,42 @@ def test_ip_rate_limit_key_supports_ipv6_and_canonicalizes_it() -> None:
         "login:ip:v1:2001:db8::1"
     )
     assert ip_rate_limit_key("2001:db8::1") == "login:ip:v1:2001:db8::1"
+
+
+def test_mfa_user_keys_are_opaque_versioned_and_window_scoped() -> None:
+    settings = _settings()
+    user_id = UUID("4d9603c7-2077-4aa1-8afd-530c5207507f")
+    short_window = mfa_user_rate_limit_key(user_id, window="15m", settings=settings)
+    daily_window = mfa_user_rate_limit_key(user_id, window="24h", settings=settings)
+
+    assert short_window.startswith("mfa:totp:verify:user:15m:v1:")
+    assert daily_window.startswith("mfa:totp:verify:user:24h:v1:")
+    assert short_window != daily_window
+    assert str(user_id) not in short_window
+    assert short_window == mfa_user_rate_limit_key(user_id, window="15m", settings=settings)
+    assert short_window != mfa_user_rate_limit_key(UUID(int=1), window="15m", settings=settings)
+
+
+def test_mfa_ip_key_is_opaque_canonical_and_separate_from_login_ip_key() -> None:
+    settings = _settings()
+    first = mfa_ip_rate_limit_key("2001:0DB8:0000:0000:0000:0000:0000:0001", settings=settings)
+    second = mfa_ip_rate_limit_key("2001:db8::1", settings=settings)
+
+    assert first.startswith("mfa:totp:verify:ip:15m:v1:")
+    assert first == second
+    assert "2001:db8::1" not in first
+    assert first != ip_rate_limit_key("2001:db8::1")
+
+
+def test_mfa_keys_require_the_existing_rate_limit_secret() -> None:
+    settings = Settings(
+        app_env="test",
+        cors_allowed_origin="http://localhost:5173",
+        rate_limit_key_secret=None,
+    )
+
+    with pytest.raises(RateLimitKeyConfigurationError):
+        mfa_user_rate_limit_key(UUID(int=1), window="15m", settings=settings)
+
+    with pytest.raises(RateLimitKeyConfigurationError):
+        mfa_ip_rate_limit_key("192.0.2.1", settings=settings)

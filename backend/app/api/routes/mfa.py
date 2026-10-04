@@ -1,15 +1,19 @@
 """Authenticated MFA enrollment routes."""
 
+from datetime import timedelta
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_user
+from app.core.client_ip import resolve_client_ip
 from app.core.clock import Clock
 from app.core.mfa_secrets import decrypt_totp_secret, encrypt_totp_secret
+from app.core.rate_limit import mfa_ip_rate_limit_key, mfa_user_rate_limit_key
 from app.db.models.mfa_credential import MfaCredential
 from app.db.repositories.mfa_credential import MfaCredentialRepository
+from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.schemas.mfa import (
     TotpEnrollmentStartResponse,
     TotpEnrollmentVerificationRequest,
@@ -27,6 +31,8 @@ router = APIRouter(prefix="/auth/mfa", tags=["mfa"])
 _ENROLLMENT_ALREADY_ENABLED = "MFA enrollment cannot be started."
 _SAFE_FAILURE = "An unexpected error occurred."
 _VERIFICATION_FAILED = "MFA enrollment verification failed."
+_RATE_LIMITED = "Too many requests. Please try again later."
+_RATE_LIMIT_UNAVAILABLE = "MFA verification is temporarily unavailable."
 
 
 @router.post(
@@ -103,12 +109,53 @@ async def start_totp_enrollment(
 )
 async def verify_totp_enrollment(
     request: TotpEnrollmentVerificationRequest,
+    http_request: Request,
     response: Response,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
 ) -> TotpEnrollmentVerificationResponse:
     """Verify a pending authenticator and enable it for the authenticated profile."""
+    now = clock.now()
+    try:
+        ip_address = resolve_client_ip(http_request)
+        rate_limits = [
+            (
+                mfa_user_rate_limit_key(principal.id, window="15m"),
+                5,
+                timedelta(minutes=15),
+            ),
+            (
+                mfa_user_rate_limit_key(principal.id, window="24h"),
+                10,
+                timedelta(hours=24),
+            ),
+            (mfa_ip_rate_limit_key(ip_address), 60, timedelta(minutes=15)),
+        ]
+        rate_limit_repository = RateLimitStateRepository(session)
+        admitted = True
+        for key, attempt_limit, window_duration in sorted(rate_limits, key=lambda item: item[0]):
+            key_admitted = await rate_limit_repository.consume_attempt(
+                key,
+                now,
+                attempt_limit=attempt_limit,
+                window_duration=window_duration,
+            )
+            admitted = admitted and key_admitted
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_RATE_LIMIT_UNAVAILABLE,
+        ) from None
+
+    if not admitted:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_RATE_LIMITED,
+        )
+
     try:
         repository = MfaCredentialRepository(session)
         credential = await repository.get_by_user_id_for_update(principal.id)
