@@ -1,6 +1,6 @@
 """Authenticated MFA enrollment routes."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -13,11 +13,14 @@ from app.core.mfa_secrets import decrypt_totp_secret, encrypt_totp_secret
 from app.core.rate_limit import mfa_ip_rate_limit_key, mfa_user_rate_limit_key
 from app.db.models.mfa_credential import MfaCredential
 from app.db.repositories.mfa_credential import MfaCredentialRepository
+from app.db.repositories.otp_challenge import OtpChallengeRepository
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.schemas.mfa import (
     TotpEnrollmentStartResponse,
     TotpEnrollmentVerificationRequest,
     TotpEnrollmentVerificationResponse,
+    TotpStepUpVerificationRequest,
+    TotpStepUpVerificationResponse,
 )
 from app.services.security_events import record_event
 from app.services.totp import (
@@ -33,6 +36,48 @@ _SAFE_FAILURE = "An unexpected error occurred."
 _VERIFICATION_FAILED = "MFA enrollment verification failed."
 _RATE_LIMITED = "Too many requests. Please try again later."
 _RATE_LIMIT_UNAVAILABLE = "MFA verification is temporarily unavailable."
+_STEP_UP_VERIFICATION_FAILED = "MFA verification failed."
+
+
+async def _consume_verification_rate_limits(
+    http_request: Request,
+    principal: AuthenticatedPrincipal,
+    session: AsyncSession,
+    now: datetime,
+) -> None:
+    """Apply the shared persistent MFA user and IP limits before code checks."""
+    try:
+        ip_address = resolve_client_ip(http_request)
+        rate_limits = [
+            (mfa_user_rate_limit_key(principal.id, window="15m"), 5, timedelta(minutes=15)),
+            (mfa_user_rate_limit_key(principal.id, window="24h"), 10, timedelta(hours=24)),
+            (mfa_ip_rate_limit_key(ip_address), 60, timedelta(minutes=15)),
+        ]
+        rate_limit_repository = RateLimitStateRepository(session)
+        admitted = True
+        for key, attempt_limit, window_duration in sorted(rate_limits, key=lambda item: item[0]):
+            key_admitted = await rate_limit_repository.consume_attempt(
+                key,
+                now,
+                attempt_limit=attempt_limit,
+                window_duration=window_duration,
+            )
+            admitted = admitted and key_admitted
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_RATE_LIMIT_UNAVAILABLE,
+            headers={"Cache-Control": "no-store"},
+        ) from None
+
+    if not admitted:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=_RATE_LIMITED,
+            headers={"Cache-Control": "no-store"},
+        )
 
 
 @router.post(
@@ -117,44 +162,7 @@ async def verify_totp_enrollment(
 ) -> TotpEnrollmentVerificationResponse:
     """Verify a pending authenticator and enable it for the authenticated profile."""
     now = clock.now()
-    try:
-        ip_address = resolve_client_ip(http_request)
-        rate_limits = [
-            (
-                mfa_user_rate_limit_key(principal.id, window="15m"),
-                5,
-                timedelta(minutes=15),
-            ),
-            (
-                mfa_user_rate_limit_key(principal.id, window="24h"),
-                10,
-                timedelta(hours=24),
-            ),
-            (mfa_ip_rate_limit_key(ip_address), 60, timedelta(minutes=15)),
-        ]
-        rate_limit_repository = RateLimitStateRepository(session)
-        admitted = True
-        for key, attempt_limit, window_duration in sorted(rate_limits, key=lambda item: item[0]):
-            key_admitted = await rate_limit_repository.consume_attempt(
-                key,
-                now,
-                attempt_limit=attempt_limit,
-                window_duration=window_duration,
-            )
-            admitted = admitted and key_admitted
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=_RATE_LIMIT_UNAVAILABLE,
-        ) from None
-
-    if not admitted:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=_RATE_LIMITED,
-        )
+    await _consume_verification_rate_limits(http_request, principal, session, now)
 
     try:
         repository = MfaCredentialRepository(session)
@@ -227,4 +235,142 @@ async def verify_totp_enrollment(
     return TotpEnrollmentVerificationResponse(
         enrollment_status="verified",
         verified_at=verified_at,
+    )
+
+
+@router.post(
+    "/totp/step-up/verify",
+    response_model=TotpStepUpVerificationResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def verify_totp_step_up(
+    request: TotpStepUpVerificationRequest,
+    http_request: Request,
+    response: Response,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> TotpStepUpVerificationResponse:
+    """Verify TOTP for one pending STEP_UP challenge owned by the principal."""
+    response.headers["Cache-Control"] = "no-store"
+    now = clock.now()
+    await _consume_verification_rate_limits(http_request, principal, session, now)
+
+    try:
+        challenge = await OtpChallengeRepository(session).get_step_up_for_user_for_update(
+            request.mfa_challenge_id, principal.id
+        )
+        if challenge is None:
+            record_event(
+                session,
+                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                actor_id=principal.id,
+                details={},
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_STEP_UP_VERIFICATION_FAILED,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        if challenge.status != "PENDING":
+            record_event(
+                session,
+                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                actor_id=principal.id,
+                access_request_id=challenge.access_request_id,
+                details={},
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_STEP_UP_VERIFICATION_FAILED,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        if challenge.expires_at <= now:
+            challenge.status = "EXPIRED"
+            record_event(
+                session,
+                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                actor_id=principal.id,
+                access_request_id=challenge.access_request_id,
+                details={},
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_STEP_UP_VERIFICATION_FAILED,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        if challenge.attempt_count >= challenge.max_attempts:
+            challenge.status = "LOCKED"
+            record_event(
+                session,
+                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                actor_id=principal.id,
+                access_request_id=challenge.access_request_id,
+                details={},
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_STEP_UP_VERIFICATION_FAILED,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        credential = await MfaCredentialRepository(session).get_by_user_id(principal.id)
+        is_valid = False
+        if credential is not None and credential.enabled and credential.verified_at is not None:
+            try:
+                secret = decrypt_totp_secret(credential.secret_ciphertext)
+                is_valid = verify_totp_code(secret, request.code, for_time=now)
+            except Exception:
+                is_valid = False
+
+        if not is_valid:
+            challenge.attempt_count += 1
+            if challenge.attempt_count >= challenge.max_attempts:
+                challenge.status = "LOCKED"
+            record_event(
+                session,
+                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                actor_id=principal.id,
+                access_request_id=challenge.access_request_id,
+                details={},
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_STEP_UP_VERIFICATION_FAILED,
+                headers={"Cache-Control": "no-store"},
+            )
+
+        challenge.status = "SUCCESS"
+        challenge.verified_at = now
+        await session.flush()
+        record_event(
+            session,
+            event_type="MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED",
+            actor_id=principal.id,
+            access_request_id=challenge.access_request_id,
+            details={},
+        )
+        await session.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_SAFE_FAILURE,
+            headers={"Cache-Control": "no-store"},
+        ) from None
+
+    response.headers["Cache-Control"] = "no-store"
+    return TotpStepUpVerificationResponse(
+        verification_status="verified",
+        verified_at=now,
     )

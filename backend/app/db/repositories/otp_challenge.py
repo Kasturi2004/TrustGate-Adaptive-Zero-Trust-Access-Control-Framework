@@ -2,10 +2,12 @@
 
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.access_request import AccessRequest
 from app.db.models.otp_challenge import OtpChallenge
+from app.db.models.policy_decision import PolicyDecision
 
 
 class OtpChallengeRepository:
@@ -23,6 +25,32 @@ class OtpChallengeRepository:
                 OtpChallenge.status == "PENDING",
             )
             .with_for_update()
+        )
+        result = await self._session.scalars(statement)
+        return result.first()
+
+    async def get_step_up_for_user_for_update(
+        self, challenge_id: UUID, user_id: UUID
+    ) -> OtpChallenge | None:
+        """Lock a challenge only when its request is a STEP_UP for this user."""
+        step_up_request = exists(
+            select(AccessRequest.id)
+            .join(PolicyDecision, PolicyDecision.access_request_id == AccessRequest.id)
+            .where(
+                AccessRequest.id == OtpChallenge.access_request_id,
+                AccessRequest.user_id == user_id,
+                AccessRequest.initial_decision == "STEP_UP",
+                PolicyDecision.decision == "STEP_UP",
+            )
+        )
+        statement = (
+            select(OtpChallenge)
+            .where(
+                OtpChallenge.id == challenge_id,
+                OtpChallenge.user_id == user_id,
+                step_up_request,
+            )
+            .with_for_update(of=OtpChallenge)
         )
         result = await self._session.scalars(statement)
         return result.first()
