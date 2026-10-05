@@ -71,6 +71,7 @@ def _configure_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 async def _create_challenge_records(
     session: AsyncSession,
     *,
+    policy: PolicyVersion | None = None,
     evaluation_status: str = "COMPLETE",
     policy_decision: str = "STEP_UP",
     final_outcome: str | None = None,
@@ -80,15 +81,16 @@ async def _create_challenge_records(
         text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
         {"id": user_id, "email": f"mfa-step-up-{user_id}@integration.test"},
     )
-    policy = PolicyVersion(
-        id=uuid4(),
-        version_label=f"mfa-step-up-{user_id}",
-        weights_json={},
-        allow_threshold=70,
-        stepup_threshold=40,
-        is_active=False,
-    )
-    session.add(policy)
+    if policy is None:
+        policy = PolicyVersion(
+            id=uuid4(),
+            version_label=f"mfa-step-up-{user_id}",
+            weights_json={},
+            allow_threshold=70,
+            stepup_threshold=40,
+            is_active=False,
+        )
+        session.add(policy)
     device = Device(
         id=uuid4(),
         user_id=user_id,
@@ -421,7 +423,14 @@ def test_concurrent_verification_authorizes_the_request_once(
 
     async def exercise() -> None:
         async with AsyncSession(engine, expire_on_commit=False) as setup_session:
-            user_id, access_request, challenge = await _create_challenge_records(setup_session)
+            policy = await setup_session.scalar(
+                select(PolicyVersion).where(PolicyVersion.version_label == "POL-1.0")
+            )
+            assert policy is not None
+            user_id, access_request, challenge = await _create_challenge_records(
+                setup_session,
+                policy=policy,
+            )
             request_id = access_request.id
             challenge_id = challenge.id
             await setup_session.commit()

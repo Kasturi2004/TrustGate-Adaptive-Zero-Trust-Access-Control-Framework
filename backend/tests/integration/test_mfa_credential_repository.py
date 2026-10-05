@@ -40,7 +40,7 @@ def test_mfa_migration_and_credential_integrity(
         )
         revision = await session.scalar(text("SELECT version_num FROM public.alembic_version"))
         assert table_exists is True
-        assert revision == "20261004_07"
+        assert revision == "20261005_08"
 
         user_id = uuid4()
         await _create_auth_user(session, user_id)
