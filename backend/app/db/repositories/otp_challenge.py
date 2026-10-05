@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models.access_request import AccessRequest
 from app.db.models.otp_challenge import OtpChallenge
 from app.db.models.policy_decision import PolicyDecision
+from app.db.models.trust_evaluation import TrustEvaluation
 
 
 class OtpChallengeRepository:
@@ -36,11 +37,20 @@ class OtpChallengeRepository:
         step_up_request = exists(
             select(AccessRequest.id)
             .join(PolicyDecision, PolicyDecision.access_request_id == AccessRequest.id)
+            .join(
+                TrustEvaluation,
+                TrustEvaluation.access_request_id == AccessRequest.id,
+            )
             .where(
                 AccessRequest.id == OtpChallenge.access_request_id,
                 AccessRequest.user_id == user_id,
                 AccessRequest.initial_decision == "STEP_UP",
+                AccessRequest.mfa_required.is_(True),
+                AccessRequest.final_outcome.is_(None),
+                AccessRequest.resolved_at.is_(None),
                 PolicyDecision.decision == "STEP_UP",
+                PolicyDecision.trust_evaluation_id == TrustEvaluation.id,
+                TrustEvaluation.status == "COMPLETE",
             )
         )
         statement = (

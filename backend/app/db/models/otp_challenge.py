@@ -44,7 +44,7 @@ class OtpChallenge(Base):
     user_id: Mapped[UUID] = mapped_column(
         PG_UUID(as_uuid=True), ForeignKey("public.profiles.id", ondelete="RESTRICT"), nullable=False
     )
-    otp_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    otp_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'PENDING'"))
     attempt_count: Mapped[int] = mapped_column(
         SmallInteger, nullable=False, server_default=text("0")

@@ -122,6 +122,11 @@ def test_check_constraints_cover_important_ranges_and_states() -> None:
     assert "decision IN ('ALLOW', 'STEP_UP', 'BLOCK')" in constraints["security_events"]
 
 
+def test_otp_hash_is_nullable_for_totp_challenges() -> None:
+    challenge = Base.metadata.tables["public.otp_challenges"]
+    assert challenge.c.otp_hash.nullable is True
+
+
 def test_schema_indexes_are_registered() -> None:
     expected_indexes = {
         "idx_devices_user_id",

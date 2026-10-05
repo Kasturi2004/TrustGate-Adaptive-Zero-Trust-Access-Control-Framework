@@ -12,6 +12,7 @@ from app.core.clock import Clock
 from app.core.mfa_secrets import decrypt_totp_secret, encrypt_totp_secret
 from app.core.rate_limit import mfa_ip_rate_limit_key, mfa_user_rate_limit_key
 from app.db.models.mfa_credential import MfaCredential
+from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.mfa_credential import MfaCredentialRepository
 from app.db.repositories.otp_challenge import OtpChallengeRepository
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
@@ -351,11 +352,31 @@ async def verify_totp_step_up(
         challenge.status = "SUCCESS"
         challenge.verified_at = now
         await session.flush()
+        resolved_request = await AccessRequestRepository(session).resolve_step_up(
+            challenge.access_request_id,
+            principal.id,
+            now,
+        )
+        if resolved_request is None:
+            await session.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_STEP_UP_VERIFICATION_FAILED,
+                headers={"Cache-Control": "no-store"},
+            )
         record_event(
             session,
             event_type="MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED",
             actor_id=principal.id,
             access_request_id=challenge.access_request_id,
+            details={},
+        )
+        record_event(
+            session,
+            event_type="ACCESS_MFA_ALLOWED",
+            actor_id=principal.id,
+            access_request_id=challenge.access_request_id,
+            decision="ALLOW",
             details={},
         )
         await session.commit()

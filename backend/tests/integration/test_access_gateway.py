@@ -15,6 +15,7 @@ from app.core.config import Settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
+from app.db.models.otp_challenge import OtpChallenge
 from app.db.models.policy_decision import PolicyDecision
 from app.db.models.policy_version import PolicyVersion
 from app.db.models.profile import Profile
@@ -56,6 +57,7 @@ _APPLICATION_MODELS = (
     TrustEvaluation,
     TrustFactor,
     PolicyDecision,
+    OtpChallenge,
 )
 _ALL_GATEWAY_MODELS = (*_APPLICATION_MODELS, SecurityEvent)
 _GATEWAY_DEVICE_SECRET = "phase-7c-integration-device-secret"
@@ -359,6 +361,17 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert (request.resolved_at is not None) is (expected_final is not None)
         assert result.decision == decision
         assert result.explanation == explain_decision(decision)
+        if decision == "STEP_UP":
+            challenge = await session.get(OtpChallenge, result.mfa_challenge_id)
+            assert challenge is not None
+            assert challenge.access_request_id == request.id
+            assert challenge.user_id == user_id
+            assert challenge.status == "PENDING"
+            assert challenge.otp_hash is None
+            assert challenge.expires_at == _NOW + gateway_service._MFA_CHALLENGE_LIFETIME
+        else:
+            assert result.mfa_challenge_id is None
+            assert await session.scalar(select(func.count()).select_from(OtpChallenge)) == 0
         evaluation = await session.scalar(select(TrustEvaluation))
         assert evaluation is not None
         assert evaluation.id == result.evaluation_id
@@ -376,6 +389,9 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert await session.scalar(select(func.count()).select_from(Device)) == 1
         assert await session.scalar(select(func.count()).select_from(ContextSignal)) == 1
         assert await session.scalar(select(func.count()).select_from(TrustEvaluation)) == 1
+        assert await session.scalar(select(func.count()).select_from(OtpChallenge)) == int(
+            decision == "STEP_UP"
+        )
         assert await session.scalar(select(func.count()).select_from(TrustFactor)) == 4
         policy_decision = await session.scalar(select(PolicyDecision))
         assert policy_decision is not None
@@ -466,6 +482,7 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             )
 
             assert response.decision == "STEP_UP"
+            assert response.mfa_challenge_id is None
             assert response.explanation == explain_decision("STEP_UP")
             assert str(rejected_policy_id) not in response.explanation
             assert "Trust result policy does not match" not in response.explanation
@@ -475,6 +492,7 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             assert request.mfa_required is True
             assert request.final_outcome is None
             assert request.resolved_at is None
+            assert await session.scalar(select(func.count()).select_from(OtpChallenge)) == 0
             evaluation = await session.scalar(select(TrustEvaluation))
             assert evaluation is not None
             assert evaluation.status == "DEGRADED_FAILSAFE"
@@ -536,7 +554,7 @@ def test_failure_after_staging_records_rolls_back_everything(
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.12",
                 user_agent="test",
-                pipeline=CompleteTestPipeline(_complete_result(policy_id, "BLOCK")),
+                pipeline=CompleteTestPipeline(_complete_result(policy_id, "STEP_UP")),
                 clock=FixedClock(_NOW),
             )
 

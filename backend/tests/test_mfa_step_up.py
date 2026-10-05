@@ -59,7 +59,7 @@ def _challenge(*, status: str = "PENDING", expires_at: datetime | None = None) -
         id=_CHALLENGE_ID,
         access_request_id=uuid4(),
         user_id=_USER_ID,
-        otp_hash="unused-for-totp",
+        otp_hash=None,
         status=status,
         attempt_count=0,
         max_attempts=3,
@@ -134,7 +134,7 @@ def _events(session: AsyncMock) -> list[SecurityEvent]:
     ]
 
 
-def test_valid_code_completes_challenge_once_without_granting_access(
+def test_valid_code_completes_challenge_and_records_authorization_events(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -159,9 +159,12 @@ def test_valid_code_completes_challenge_once_without_granting_access(
     assert challenge.verified_at == _NOW
     assert challenge.attempt_count == 0
     assert [event.event_type for event in _events(session)] == [
-        "MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED"
+        "MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED",
+        "ACCESS_MFA_ALLOWED",
     ]
     assert _events(session)[0].details == {}
+    assert _events(session)[1].decision == "ALLOW"
+    assert _events(session)[1].details == {}
     assert code not in response.text + caplog.text
     assert _SECRET not in response.text + caplog.text
     assert all(
@@ -197,6 +200,7 @@ def test_invalid_code_consumes_challenge_attempt_and_locks_at_limit(
     [
         (None, _credential()),
         (_challenge(status="SUCCESS"), _credential()),
+        (_challenge(status="LOCKED"), _credential()),
         (_challenge(expires_at=_NOW), _credential()),
         (_challenge(), None),
         (_challenge(), _credential(enabled=False)),
@@ -265,7 +269,6 @@ def test_persistence_failure_rolls_back_challenge_transition(
     )
 
     assert response.status_code == 500
-    assert challenge.status == "SUCCESS"
     session.rollback.assert_awaited_once()
 
 

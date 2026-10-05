@@ -22,6 +22,7 @@ _EVENT_DETAIL_ALLOWLISTS: dict[str, frozenset[str]] = {
     "MFA_TOTP_ENROLLMENT_VERIFICATION_SUCCEEDED": frozenset(),
     "MFA_TOTP_STEP_UP_VERIFICATION_FAILED": frozenset(),
     "MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED": frozenset(),
+    "ACCESS_MFA_ALLOWED": frozenset(),
     "PIPELINE_DEGRADED_FAILSAFE": frozenset(),
     "UNAUTHORIZED_ACCESS_ATTEMPT": frozenset({"resource", "path", "method"}),
     "ADMIN_UNAUTHORIZED_ATTEMPT": frozenset({"attempted_role", "path", "method"}),

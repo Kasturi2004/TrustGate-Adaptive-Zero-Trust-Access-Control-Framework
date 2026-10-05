@@ -123,7 +123,7 @@ async def verify_migration_head(test_database_url: str) -> None:
             revision = await connection.scalar(
                 text("SELECT version_num FROM public.alembic_version")
             )
-        if revision != "20261004_07":
+        if revision != "20261005_08":
             raise RuntimeError("Scratch database did not reach the expected Alembic head")
     finally:
         await engine.dispose()

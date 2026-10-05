@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import Literal, Protocol, cast
@@ -17,6 +17,7 @@ from app.core.config import Settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
+from app.db.models.otp_challenge import OtpChallenge
 from app.db.models.policy_decision import PolicyDecision
 from app.db.models.profile import Profile
 from app.db.models.trust_evaluation import TrustEvaluation
@@ -24,6 +25,7 @@ from app.db.models.trust_factor import TrustFactor
 from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.context_signal import ContextSignalRepository
 from app.db.repositories.device import DeviceRepository
+from app.db.repositories.otp_challenge import OtpChallengeRepository
 from app.db.repositories.policy_decision import PolicyDecisionRepository
 from app.db.repositories.policy_version import PolicyVersionRepository
 from app.db.repositories.trust_evaluation import TrustEvaluationRepository
@@ -77,6 +79,7 @@ _ACCESS_EVENT_TYPES: dict[Decision, str] = {
     "STEP_UP": "ACCESS_STEPUP",
     "BLOCK": "ACCESS_BLOCKED",
 }
+_MFA_CHALLENGE_LIFETIME = timedelta(minutes=5)
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,6 +506,7 @@ async def access_gateway(
         raise PipelineExecutionError("Access evaluation is unavailable")
 
     final_decision = policy_decision.decision
+    mfa_challenge_id: UUID | None = None
 
     now = (
         evaluated.context.captured_at
@@ -608,6 +612,23 @@ async def access_gateway(
         )
         await session.flush()
 
+        if final_decision == "STEP_UP":
+            mfa_challenge_id = uuid4()
+            OtpChallengeRepository(session).add(
+                OtpChallenge(
+                    id=mfa_challenge_id,
+                    access_request_id=access_request_id,
+                    user_id=principal.id,
+                    otp_hash=None,
+                    status="PENDING",
+                    attempt_count=0,
+                    max_attempts=3,
+                    created_at=now,
+                    expires_at=now + _MFA_CHALLENGE_LIFETIME,
+                )
+            )
+            await session.flush()
+
         record_event(
             session,
             event_type=_ACCESS_EVENT_TYPES[final_decision],
@@ -637,4 +658,5 @@ async def access_gateway(
         evaluation_id=evaluation_id,
         decision=final_decision,
         explanation=explain_decision(final_decision),
+        mfa_challenge_id=mfa_challenge_id,
     )

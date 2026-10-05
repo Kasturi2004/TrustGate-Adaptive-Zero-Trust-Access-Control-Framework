@@ -1,8 +1,9 @@
 """Persistence queries and outcome updates for access requests."""
 
+from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.access_request import AccessRequest
@@ -41,3 +42,29 @@ class AccessRequestRepository:
             return None
         access_request.final_outcome = outcome
         return access_request
+
+    async def resolve_step_up(
+        self,
+        access_request_id: UUID,
+        user_id: UUID,
+        resolved_at: datetime,
+    ) -> AccessRequest | None:
+        """Atomically resolve one still-pending MFA STEP_UP request to ALLOW."""
+        statement = (
+            update(AccessRequest)
+            .where(
+                AccessRequest.id == access_request_id,
+                AccessRequest.user_id == user_id,
+                AccessRequest.initial_decision == "STEP_UP",
+                AccessRequest.mfa_required.is_(True),
+                AccessRequest.final_outcome.is_(None),
+                AccessRequest.resolved_at.is_(None),
+            )
+            .values(final_outcome="ALLOW", resolved_at=resolved_at)
+            .returning(AccessRequest)
+        )
+        result = await self._session.scalars(
+            statement,
+            execution_options={"populate_existing": True},
+        )
+        return result.first()
