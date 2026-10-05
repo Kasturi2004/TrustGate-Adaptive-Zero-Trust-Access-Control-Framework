@@ -125,6 +125,7 @@ def test_authenticated_user_starts_enrollment_without_selecting_user(
     assert decrypt_totp_secret(credential.secret_ciphertext, settings=_settings()) == secret
     assert credential.verified_at is None
     assert credential.enabled is False
+    assert credential.last_accepted_time_step is None
 
     events = _security_events(session)
     assert len(events) == 1
@@ -148,6 +149,7 @@ def test_repeated_start_replaces_only_pending_credential(
         secret_ciphertext=encrypt_totp_secret(previous_secret, settings=_settings()),
         verified_at=None,
         enabled=False,
+        last_accepted_time_step=123,
     )
     session = _session(credential=existing)
     client = _client(session, monkeypatch)
@@ -161,6 +163,7 @@ def test_repeated_start_replaces_only_pending_credential(
     assert decrypt_totp_secret(existing.secret_ciphertext, settings=_settings()) == new_secret
     assert existing.verified_at is None
     assert existing.enabled is False
+    assert existing.last_accepted_time_step is None
     assert _mfa_records(session) == []
     assert len(_security_events(session)) == 1
     session.commit.assert_awaited_once()

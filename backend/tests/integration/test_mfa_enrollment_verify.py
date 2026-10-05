@@ -100,13 +100,18 @@ def test_enrollment_verification_transition_persists_in_postgresql(
         await session.refresh(credential)
         assert credential.enabled is True
         assert credential.verified_at == _VERIFIED_AT
+        expected_step = pyotp.TOTP(_TEST_SECRET, digits=6, interval=30).timecode(_VERIFIED_AT)
         persisted = await session.execute(
-            text("SELECT enabled, verified_at FROM public.mfa_credentials WHERE user_id = :id"),
+            text(
+                "SELECT enabled, verified_at, last_accepted_time_step "
+                "FROM public.mfa_credentials WHERE user_id = :id"
+            ),
             {"id": user_id},
         )
-        enabled, verified_at = persisted.one()
+        enabled, verified_at, last_accepted_time_step = persisted.one()
         assert enabled is True
         assert verified_at == _VERIFIED_AT
+        assert last_accepted_time_step == expected_step
         event = await session.execute(
             text(
                 "SELECT details FROM public.security_events "
@@ -166,12 +171,16 @@ def test_verification_failure_rolls_back_postgresql_state_transition(
         assert error.value.status_code == 500
 
         persisted = await session.execute(
-            text("SELECT enabled, verified_at FROM public.mfa_credentials WHERE user_id = :id"),
+            text(
+                "SELECT enabled, verified_at, last_accepted_time_step "
+                "FROM public.mfa_credentials WHERE user_id = :id"
+            ),
             {"id": user_id},
         )
-        enabled, verified_at = persisted.one()
+        enabled, verified_at, last_accepted_time_step = persisted.one()
         assert enabled is False
         assert verified_at is None
+        assert last_accepted_time_step is None
         user_key = mfa_user_rate_limit_key(user_id, window="15m", settings=_TEST_SETTINGS)
         limiter_state = await session.get(RateLimitState, user_key)
         assert limiter_state is not None

@@ -184,6 +184,11 @@ def test_step_up_verification_persists_success_and_rejects_replay(
         assert challenge.status == "SUCCESS"
         assert challenge.verified_at == _NOW
         assert challenge.attempt_count == 0
+        credential = await session.get(MfaCredential, user_id)
+        assert credential is not None
+        assert credential.last_accepted_time_step == pyotp.TOTP(
+            _SECRET, digits=6, interval=30
+        ).timecode(_NOW)
         await session.refresh(access_request)
         assert access_request.final_outcome == "ALLOW"
         assert access_request.resolved_at == _NOW
@@ -367,6 +372,9 @@ def test_failed_totp_does_not_resolve_access_request(
         assert access_request.resolved_at is None
         assert challenge.status == "PENDING"
         assert challenge.attempt_count == 1
+        credential = await session.get(MfaCredential, user_id)
+        assert credential is not None
+        assert credential.last_accepted_time_step is None
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -409,6 +417,9 @@ def test_event_persistence_failure_rolls_back_challenge_and_access_transition(
         assert stored_challenge is not None
         assert stored_challenge.status == "PENDING"
         assert stored_challenge.verified_at is None
+        credential = await session.get(MfaCredential, user_id)
+        assert credential is not None
+        assert credential.last_accepted_time_step is None
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -501,6 +512,186 @@ def test_concurrent_verification_authorizes_the_request_once(
             )
         # Keep the append-only audit history and its referenced request graph.
         # Random user/request IDs isolate retained rows between test runs.
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        asyncio.run(engine.dispose())
+
+
+def test_concurrent_same_time_step_on_distinct_challenges_authorizes_once(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_settings(monkeypatch)
+    client_ips = ("192.0.2.198", "192.0.2.199")
+    engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+
+    async def exercise() -> None:
+        async with AsyncSession(engine, expire_on_commit=False) as setup_session:
+            policy = await setup_session.scalar(
+                select(PolicyVersion).where(PolicyVersion.version_label == "POL-1.0")
+            )
+            assert policy is not None
+            user_id, first_request, first_challenge = await _create_challenge_records(
+                setup_session,
+                policy=policy,
+            )
+            second_device = Device(
+                id=uuid4(),
+                user_id=user_id,
+                device_hash=f"mfa-step-up-second-device-{user_id}",
+                first_seen_at=_NOW,
+                last_seen_at=_NOW,
+            )
+            setup_session.add(second_device)
+            await setup_session.flush()
+            second_request = AccessRequest(
+                id=uuid4(),
+                user_id=user_id,
+                device_id=second_device.id,
+                source_ip=IPv4Address("192.0.2.48"),
+                initial_decision="STEP_UP",
+                mfa_required=True,
+                requested_at=_NOW,
+            )
+            setup_session.add(second_request)
+            await setup_session.flush()
+            second_evaluation = TrustEvaluation(
+                id=uuid4(),
+                access_request_id=second_request.id,
+                policy_version_id=policy.id,
+                trust_score=50,
+                risk_classification="MEDIUM",
+                status="COMPLETE",
+                evaluated_at=_NOW,
+            )
+            setup_session.add(second_evaluation)
+            await setup_session.flush()
+            setup_session.add(
+                PolicyDecision(
+                    id=uuid4(),
+                    access_request_id=second_request.id,
+                    trust_evaluation_id=second_evaluation.id,
+                    policy_version_id=policy.id,
+                    decision="STEP_UP",
+                    decision_reason="Additional verification is required.",
+                    decided_at=_NOW,
+                )
+            )
+            second_challenge = OtpChallenge(
+                id=uuid4(),
+                access_request_id=second_request.id,
+                user_id=user_id,
+                otp_hash=None,
+                status="PENDING",
+                attempt_count=0,
+                max_attempts=3,
+                created_at=_NOW - timedelta(minutes=1),
+                expires_at=_NOW + timedelta(minutes=5),
+            )
+            setup_session.add(second_challenge)
+            first_request_id = first_request.id
+            second_request_id = second_request.id
+            first_challenge_id = first_challenge.id
+            second_challenge_id = second_challenge.id
+            await setup_session.commit()
+
+        async def verify_once(challenge_id: UUID, client_ip: str) -> int:
+            async with AsyncSession(engine, expire_on_commit=False) as session:
+                try:
+                    await mfa_routes.verify_totp_step_up(
+                        request=TotpStepUpVerificationRequest(
+                            mfa_challenge_id=challenge_id,
+                            code=pyotp.TOTP(_SECRET).at(_NOW),
+                        ),
+                        http_request=_request(client_ip),
+                        response=Response(),
+                        principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                        session=session,
+                        clock=FixedClock(_NOW),
+                    )
+                    return 200
+                except HTTPException as error:
+                    return error.status_code
+
+        statuses = await asyncio.gather(
+            verify_once(first_challenge_id, client_ips[0]),
+            verify_once(second_challenge_id, client_ips[1]),
+        )
+        assert sorted(statuses) == [200, 400]
+
+        async with AsyncSession(engine) as verify_session:
+            stored_requests = [
+                await verify_session.get(AccessRequest, request_id)
+                for request_id in (first_request_id, second_request_id)
+            ]
+            stored_challenges = [
+                await verify_session.get(OtpChallenge, challenge_id)
+                for challenge_id in (first_challenge_id, second_challenge_id)
+            ]
+            assert (
+                sum(
+                    request is not None and request.final_outcome == "ALLOW"
+                    for request in stored_requests
+                )
+                == 1
+            )
+            assert (
+                sum(
+                    challenge is not None and challenge.status == "SUCCESS"
+                    for challenge in stored_challenges
+                )
+                == 1
+            )
+            assert (
+                sum(
+                    challenge is not None and challenge.attempt_count == 1
+                    for challenge in stored_challenges
+                )
+                == 1
+            )
+            credential = await verify_session.get(MfaCredential, user_id)
+            assert credential is not None
+            assert credential.last_accepted_time_step == pyotp.TOTP(
+                _SECRET, digits=6, interval=30
+            ).timecode(_NOW)
+            allowed_events = await verify_session.scalar(
+                text(
+                    "SELECT count(*) FROM public.security_events "
+                    "WHERE access_request_id IN (:first_id, :second_id) "
+                    "AND event_type = 'ACCESS_MFA_ALLOWED'"
+                ),
+                {"first_id": first_request_id, "second_id": second_request_id},
+            )
+            assert allowed_events == 1
+
+        limiter_keys = [
+            mfa_user_rate_limit_key(user_id, window="15m", settings=_SETTINGS),
+            mfa_user_rate_limit_key(user_id, window="24h", settings=_SETTINGS),
+            *(mfa_ip_rate_limit_key(ip, settings=_SETTINGS) for ip in client_ips),
+        ]
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM public.rate_limit_state WHERE key IN "
+                    "(:user_short, :user_daily, :first_ip, :second_ip)"
+                ),
+                {
+                    "user_short": limiter_keys[0],
+                    "user_daily": limiter_keys[1],
+                    "first_ip": limiter_keys[2],
+                    "second_ip": limiter_keys[3],
+                },
+            )
+            await connection.execute(
+                text("DELETE FROM public.mfa_credentials WHERE user_id = :id"),
+                {"id": user_id},
+            )
+            await connection.execute(
+                text("DELETE FROM public.otp_challenges WHERE id IN (:first_id, :second_id)"),
+                {"first_id": first_challenge_id, "second_id": second_challenge_id},
+            )
 
     try:
         asyncio.run(exercise())

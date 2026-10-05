@@ -96,6 +96,9 @@ def test_mfa_model_has_profile_integrity_and_safe_state_constraints() -> None:
     assert {"secret_ciphertext", "enabled", "created_at", "updated_at"}.issubset(
         table.columns.keys()
     )
+    replay_state = table.c.last_accepted_time_step
+    assert replay_state.nullable is True
+    assert replay_state.default is None
 
 
 def test_mfa_secret_is_absent_from_public_schemas_and_model_repr() -> None:

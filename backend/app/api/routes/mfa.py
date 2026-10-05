@@ -27,7 +27,7 @@ from app.services.security_events import record_event
 from app.services.totp import (
     generate_totp_provisioning_uri,
     generate_totp_secret,
-    verify_totp_code,
+    verify_totp_time_step,
 )
 
 router = APIRouter(prefix="/auth/mfa", tags=["mfa"])
@@ -123,6 +123,7 @@ async def start_totp_enrollment(
             credential.secret_ciphertext = ciphertext
             credential.verified_at = None
             credential.enabled = False
+            credential.last_accepted_time_step = None
 
         await session.flush()
         record_event(
@@ -194,13 +195,14 @@ async def verify_totp_enrollment(
             )
 
         verified_at = clock.now()
+        matched_time_step: int | None = None
         try:
             secret = decrypt_totp_secret(credential.secret_ciphertext)
-            is_valid = verify_totp_code(secret, request.code, for_time=verified_at)
+            matched_time_step = verify_totp_time_step(secret, request.code, for_time=verified_at)
         except Exception:
-            is_valid = False
+            matched_time_step = None
 
-        if not is_valid:
+        if matched_time_step is None:
             record_event(
                 session,
                 event_type="MFA_TOTP_ENROLLMENT_VERIFICATION_FAILED",
@@ -215,6 +217,7 @@ async def verify_totp_enrollment(
 
         credential.verified_at = verified_at
         credential.enabled = True
+        credential.last_accepted_time_step = matched_time_step
         await session.flush()
         record_event(
             session,
@@ -322,16 +325,20 @@ async def verify_totp_step_up(
                 headers={"Cache-Control": "no-store"},
             )
 
-        credential = await MfaCredentialRepository(session).get_by_user_id(principal.id)
-        is_valid = False
+        credential = await MfaCredentialRepository(session).get_by_user_id_for_update(principal.id)
+        matched_time_step: int | None = None
         if credential is not None and credential.enabled and credential.verified_at is not None:
             try:
                 secret = decrypt_totp_secret(credential.secret_ciphertext)
-                is_valid = verify_totp_code(secret, request.code, for_time=now)
+                matched_time_step = verify_totp_time_step(secret, request.code, for_time=now)
             except Exception:
-                is_valid = False
+                matched_time_step = None
 
-        if not is_valid:
+        if matched_time_step is None or (
+            credential is not None
+            and credential.last_accepted_time_step is not None
+            and matched_time_step <= credential.last_accepted_time_step
+        ):
             challenge.attempt_count += 1
             if challenge.attempt_count >= challenge.max_attempts:
                 challenge.status = "LOCKED"
@@ -349,6 +356,9 @@ async def verify_totp_step_up(
                 headers={"Cache-Control": "no-store"},
             )
 
+        assert credential is not None
+        assert matched_time_step is not None
+        credential.last_accepted_time_step = matched_time_step
         challenge.status = "SUCCESS"
         challenge.verified_at = now
         await session.flush()

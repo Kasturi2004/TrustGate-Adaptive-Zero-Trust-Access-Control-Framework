@@ -142,6 +142,9 @@ def test_valid_code_enables_enrollment_with_sanitized_response_and_event(
     assert provisioning_uri not in response.text
     assert credential.enabled is True
     assert credential.verified_at == _VERIFIED_AT
+    assert credential.last_accepted_time_step == pyotp.TOTP(
+        _SECRET, digits=6, interval=30
+    ).timecode(_VERIFIED_AT)
     assert len(_security_events(session)) == 1
     event = _security_events(session)[0]
     assert event.event_type == "MFA_TOTP_ENROLLMENT_VERIFICATION_SUCCEEDED"
@@ -168,6 +171,7 @@ def test_invalid_code_keeps_pending_credential_and_records_empty_details(
 ) -> None:
     credential = _credential()
     original_ciphertext = credential.secret_ciphertext
+    credential.last_accepted_time_step = 123
     session = _session(credential=credential)
     client = _client(session, monkeypatch)
     code = "000000" if pyotp.TOTP(_SECRET).at(_VERIFIED_AT) != "000000" else "000001"
@@ -180,6 +184,7 @@ def test_invalid_code_keeps_pending_credential_and_records_empty_details(
     assert credential.enabled is False
     assert credential.verified_at is None
     assert credential.secret_ciphertext == original_ciphertext
+    assert credential.last_accepted_time_step == 123
     assert _security_events(session)[0].details == {}
     assert _security_events(session)[0].event_type == "MFA_TOTP_ENROLLMENT_VERIFICATION_FAILED"
     assert code not in caplog.text

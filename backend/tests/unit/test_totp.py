@@ -10,6 +10,7 @@ from app.services.totp import (
     generate_totp_provisioning_uri,
     generate_totp_secret,
     verify_totp_code,
+    verify_totp_time_step,
 )
 
 
@@ -45,6 +46,9 @@ def test_current_totp_code_verifies() -> None:
     code = pyotp.TOTP(secret, digits=6, interval=30).at(now)
 
     assert verify_totp_code(secret, code, for_time=now)
+    assert verify_totp_time_step(secret, code, for_time=now) == pyotp.TOTP(
+        secret, digits=6, interval=30
+    ).timecode(now)
 
 
 def test_invalid_and_malformed_totp_codes_fail_safely() -> None:
@@ -54,8 +58,10 @@ def test_invalid_and_malformed_totp_codes_fail_safely() -> None:
     invalid_code = f"{(int(valid_code) + 1) % 1_000_000:06d}"
 
     assert not verify_totp_code(secret, invalid_code, for_time=now)
+    assert verify_totp_time_step(secret, invalid_code, for_time=now) is None
     for malformed_code in ("", "12345", "1234567", "abcdef", "１２３４５６"):
         assert not verify_totp_code(secret, malformed_code, for_time=now)
+        assert verify_totp_time_step(secret, malformed_code, for_time=now) is None
 
 
 def test_malformed_secret_does_not_escape_through_verification_error() -> None:

@@ -40,7 +40,7 @@ def test_mfa_migration_and_credential_integrity(
         )
         revision = await session.scalar(text("SELECT version_num FROM public.alembic_version"))
         assert table_exists is True
-        assert revision == "20261005_08"
+        assert revision == "20261005_09"
 
         user_id = uuid4()
         await _create_auth_user(session, user_id)
@@ -53,12 +53,14 @@ def test_mfa_migration_and_credential_integrity(
         await session.flush()
         assert credential.verified_at is None
         assert credential.enabled is False
+        assert credential.last_accepted_time_step is None
         assert credential.created_at is not None
         assert credential.updated_at is not None
 
         verified_at = datetime(2026, 10, 4, tzinfo=UTC)
         credential.verified_at = verified_at
         credential.enabled = True
+        credential.last_accepted_time_step = 5_000_000
         await session.flush()
 
         loaded = await repository.get_by_user_id(user_id)
@@ -72,6 +74,7 @@ def test_mfa_migration_and_credential_integrity(
         )
         assert loaded.verified_at == verified_at
         assert loaded.enabled is True
+        assert loaded.last_accepted_time_step == 5_000_000
         assert await repository.get_by_user_id(uuid4()) is None
 
         active_transaction = session.get_transaction()

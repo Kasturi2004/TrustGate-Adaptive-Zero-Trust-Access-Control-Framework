@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, LargeBinary, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, LargeBinary, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import FetchedValue
@@ -25,6 +25,7 @@ class MfaCredential(Base):
         primary_key=True,
     )
     secret_ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    last_accepted_time_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(

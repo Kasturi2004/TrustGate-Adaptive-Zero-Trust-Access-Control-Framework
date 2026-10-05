@@ -1,7 +1,7 @@
 """TOTP secret, provisioning, and verification helpers."""
 
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 
 import pyotp
 
@@ -29,10 +29,23 @@ def verify_totp_code(
     for_time: datetime | None = None,
 ) -> bool:
     """Verify one six-digit code, returning false for malformed input or secrets."""
+    return verify_totp_time_step(secret, code, for_time=for_time) is not None
+
+
+def verify_totp_time_step(
+    secret: str,
+    code: str,
+    *,
+    for_time: datetime | None = None,
+) -> int | None:
+    """Return the matched PyOTP time step, or None when the code is invalid."""
     if not isinstance(code, str) or _CODE_PATTERN.fullmatch(code) is None:
-        return False
+        return None
     try:
         totp = pyotp.TOTP(secret, digits=_DIGITS, interval=_INTERVAL_SECONDS)
-        return totp.verify(code, for_time=for_time)
+        verification_time = for_time if for_time is not None else datetime.now(UTC)
+        if not totp.verify(code, for_time=verification_time, valid_window=0):
+            return None
+        return totp.timecode(verification_time)
     except (TypeError, ValueError):
-        return False
+        return None

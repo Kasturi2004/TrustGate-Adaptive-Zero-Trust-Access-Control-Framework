@@ -45,12 +45,18 @@ def _settings() -> Settings:
     )
 
 
-def _credential(*, enabled: bool = True, verified: bool = True) -> MfaCredential:
+def _credential(
+    *,
+    enabled: bool = True,
+    verified: bool = True,
+    last_accepted_time_step: int | None = None,
+) -> MfaCredential:
     return MfaCredential(
         user_id=_USER_ID,
         secret_ciphertext=encrypt_totp_secret(_SECRET, settings=_settings()),
         verified_at=_NOW if verified else None,
         enabled=enabled,
+        last_accepted_time_step=last_accepted_time_step,
     )
 
 
@@ -115,9 +121,25 @@ def _session(
     credential: MfaCredential | None,
 ) -> AsyncMock:
     session = AsyncMock(spec=AsyncSession)
-    scalar_result = MagicMock()
-    scalar_result.first.return_value = challenge
-    session.scalars.return_value = scalar_result
+    state = {"challenge": challenge, "credential": credential}
+
+    async def scalars(statement: object, *_args: object, **_kwargs: object) -> MagicMock:
+        query = str(statement)
+        result = MagicMock()
+        if "otp_challenges" in query:
+            result.first.return_value = state["challenge"]
+        elif "public.profiles" in query:
+            result.first.return_value = object()
+        elif "mfa_credentials" in query:
+            result.first.return_value = state["credential"]
+        elif "access_requests" in query and query.lstrip().startswith("UPDATE"):
+            result.first.return_value = object()
+        else:
+            raise AssertionError(f"Unexpected MFA test query: {query}")
+        return result
+
+    session.scalars.side_effect = scalars
+    session.mfa_test_state = state
     session.get.return_value = credential
     return session
 
@@ -158,6 +180,9 @@ def test_valid_code_completes_challenge_and_records_authorization_events(
     assert challenge.status == "SUCCESS"
     assert challenge.verified_at == _NOW
     assert challenge.attempt_count == 0
+    assert session.mfa_test_state["credential"].last_accepted_time_step == pyotp.TOTP(
+        _SECRET, digits=6, interval=30
+    ).timecode(_NOW)
     assert [event.event_type for event in _events(session)] == [
         "MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED",
         "ACCESS_MFA_ALLOWED",
@@ -192,6 +217,7 @@ def test_invalid_code_consumes_challenge_attempt_and_locks_at_limit(
     assert response.headers["cache-control"] == "no-store"
     assert challenge.attempt_count == 3
     assert challenge.status == "LOCKED"
+    assert session.mfa_test_state["credential"].last_accepted_time_step is None
     assert _events(session)[0].details == {}
 
 
@@ -212,6 +238,8 @@ def test_unavailable_challenge_or_credential_has_one_generic_failure(
     challenge: OtpChallenge | None,
     credential: MfaCredential | None,
 ) -> None:
+    if credential is not None:
+        credential.last_accepted_time_step = 123
     session = _session(challenge, credential)
     client = _client(session, monkeypatch)
 
@@ -228,6 +256,38 @@ def test_unavailable_challenge_or_credential_has_one_generic_failure(
     assert _events(session)[0].details == {}
     if challenge is not None and challenge.expires_at <= _NOW:
         assert challenge.status == "EXPIRED"
+    assert credential is None or credential.last_accepted_time_step == 123
+
+
+def test_same_time_step_is_rejected_on_a_second_pending_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_challenge = _challenge()
+    credential = _credential()
+    session = _session(first_challenge, credential)
+    client = _client(session, monkeypatch)
+    code = pyotp.TOTP(_SECRET).at(_NOW)
+
+    first = client.post(
+        "/auth/mfa/totp/step-up/verify",
+        json={"mfa_challenge_id": str(first_challenge.id), "code": code},
+    )
+    assert first.status_code == 200
+    accepted_step = pyotp.TOTP(_SECRET).timecode(_NOW)
+
+    second_challenge = _challenge()
+    second_challenge.id = uuid4()
+    session.mfa_test_state["challenge"] = second_challenge
+    second = client.post(
+        "/auth/mfa/totp/step-up/verify",
+        json={"mfa_challenge_id": str(second_challenge.id), "code": code},
+    )
+
+    assert second.status_code == 400
+    assert second.json()["error"]["message"] == "MFA verification failed."
+    assert credential.last_accepted_time_step == accepted_step
+    assert second_challenge.attempt_count == 1
+    assert second_challenge.status == "PENDING"
 
 
 def test_invalid_payload_and_unauthenticated_request_are_rejected(
