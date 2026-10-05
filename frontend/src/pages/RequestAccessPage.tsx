@@ -1,20 +1,84 @@
-import { useState } from "react";
+import { useRef, useState, type FormEvent } from "react";
 import { apiRequest } from "../api/client.ts";
 import { DecisionPresentation } from "../components/DecisionPresentation.tsx";
 import { isAccessEvaluationResponse, type AccessEvaluationResponse } from "../types/access.ts";
 
 const RESOURCE_ID = "ops-dashboard";
 const SAFE_ERROR = "We couldn't complete the access request. Please try again.";
+const MFA_SAFE_ERROR = "Verification could not be completed. Please try again.";
+
+function isSuccessfulTotpVerification(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || !("verification_status" in value)) {
+    return false;
+  }
+
+  if (!("verified_at" in value)) return false;
+  const verifiedAt = value.verified_at;
+  return (
+    value.verification_status === "verified" &&
+    typeof verifiedAt === "string" &&
+    Number.isFinite(Date.parse(verifiedAt))
+  );
+}
 
 export function RequestAccessPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evaluation, setEvaluation] = useState<AccessEvaluationResponse | null>(null);
+  const [totpCode, setTotpCode] = useState("");
+  const [totpError, setTotpError] = useState<string | null>(null);
+  const [verifyingTotp, setVerifyingTotp] = useState(false);
+  const [totpVerified, setTotpVerified] = useState(false);
+  const verificationInFlight = useRef(false);
+
+  const submitTotpCode = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (verificationInFlight.current) return;
+
+    if (!/^[0-9]{6}$/.test(totpCode)) {
+      setTotpError("Enter a six-digit authenticator code.");
+      return;
+    }
+
+    const challengeId = evaluation?.mfa_challenge_id;
+    if (evaluation?.decision !== "STEP_UP" || !challengeId) {
+      setTotpError(MFA_SAFE_ERROR);
+      setTotpCode("");
+      return;
+    }
+
+    verificationInFlight.current = true;
+    setVerifyingTotp(true);
+    setTotpError(null);
+
+    try {
+      const response = await apiRequest("/auth/mfa/totp/step-up/verify", {
+        method: "POST",
+        body: { mfa_challenge_id: challengeId, code: totpCode },
+      });
+      if (!response.ok) throw new Error("MFA verification failed");
+
+      const body: unknown = await response.json();
+      if (!isSuccessfulTotpVerification(body)) throw new Error("MFA response was invalid");
+
+      setTotpVerified(true);
+    } catch {
+      setTotpError(MFA_SAFE_ERROR);
+    } finally {
+      setTotpCode("");
+      setVerifyingTotp(false);
+      verificationInFlight.current = false;
+    }
+  };
 
   const requestAccess = async () => {
     setLoading(true);
     setError(null);
     setEvaluation(null);
+    setTotpCode("");
+    setTotpError(null);
+    setVerifyingTotp(false);
+    setTotpVerified(false);
 
     try {
       // Phase 5 demo token only; Phase 6 will supply the real device identity.
@@ -83,7 +147,7 @@ export function RequestAccessPage() {
             className="login-submit access-request-button"
             type="button"
             onClick={requestAccess}
-            disabled={loading}
+            disabled={loading || verifyingTotp}
           >
             {loading ? "Requesting access…" : "Request Access"}
             <span aria-hidden="true">→</span>
@@ -95,7 +159,20 @@ export function RequestAccessPage() {
             </p>
           )}
 
-          {evaluation && <DecisionPresentation evaluation={evaluation} />}
+          {evaluation && (
+            <DecisionPresentation
+              evaluation={evaluation}
+              totpCode={totpCode}
+              totpError={totpError}
+              verifyingTotp={verifyingTotp}
+              totpVerified={totpVerified}
+              onTotpCodeChange={(code) => {
+                setTotpCode(code);
+                setTotpError(null);
+              }}
+              onTotpSubmit={submitTotpCode}
+            />
+          )}
         </section>
         <aside className="request-explanation">
           <span className="page-eyebrow">How it works</span>

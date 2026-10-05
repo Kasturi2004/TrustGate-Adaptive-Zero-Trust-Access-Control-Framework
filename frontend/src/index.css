@@ -460,8 +460,55 @@ h1 {
   border-color: var(--decision-border);
   background: var(--decision-accent-bg);
   color: var(--decision-accent);
+  cursor: pointer;
+}
+
+.decision-primary:disabled {
   cursor: not-allowed;
   opacity: 0.78;
+}
+
+.totp-verification-form {
+  display: grid;
+  flex-basis: 100%;
+  gap: 0.65rem;
+  max-width: 24rem;
+  margin: 0 auto;
+  text-align: left;
+}
+
+.totp-verification-form h3,
+.totp-verification-form p {
+  margin: 0;
+}
+
+.totp-verification-form > p:not(.login-error) {
+  color: #aab7c2;
+}
+
+.totp-verification-form label {
+  color: #d6e0e8;
+  font-size: 0.9rem;
+}
+
+.totp-verification-form input {
+  min-height: 2.6rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid #354858;
+  border-radius: 6px;
+  background: #111820;
+  color: #e6edf3;
+  font: inherit;
+  letter-spacing: 0.16em;
+}
+
+.totp-verification-form input:focus {
+  outline: 2px solid #6ba8d6;
+  outline-offset: 2px;
+}
+
+.totp-verification-form .decision-primary {
+  justify-self: start;
 }
 
 .decision-secondary:hover {
