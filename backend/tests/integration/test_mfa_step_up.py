@@ -2,8 +2,10 @@
 
 import asyncio
 import base64
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from ipaddress import IPv4Address
+from typing import Any
 from uuid import UUID, uuid4
 
 import pyotp
@@ -28,6 +30,7 @@ from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.session import create_async_engine_for_url
 from app.schemas.mfa import TotpStepUpVerificationRequest
 from app.services.context import client_ip as client_ip_module
+from app.services.security_events import record_event as record_security_event
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
 from sqlalchemy import select, text
@@ -407,14 +410,35 @@ def test_failed_attempt_event_failure_rolls_back_attempt_count(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_settings(monkeypatch)
-    original_record_event = mfa_routes.record_event
+    original_record_event = record_security_event
 
-    def fail_failed_attempt_event(*args: object, **kwargs: object) -> SecurityEvent:
-        if kwargs.get("event_type") == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED":
+    def fail_failed_attempt_event(
+        session: AsyncSession,
+        *,
+        event_type: str,
+        actor_id: UUID | None = None,
+        target_user_id: UUID | None = None,
+        access_request_id: UUID | None = None,
+        trust_evaluation_id: UUID | None = None,
+        decision: str | None = None,
+        risk_category: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> SecurityEvent:
+        if event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED":
             raise RuntimeError("failed-attempt audit persistence failed")
-        return original_record_event(*args, **kwargs)
+        return original_record_event(
+            session,
+            event_type=event_type,
+            actor_id=actor_id,
+            target_user_id=target_user_id,
+            access_request_id=access_request_id,
+            trust_evaluation_id=trust_evaluation_id,
+            decision=decision,
+            risk_category=risk_category,
+            details=details,
+        )
 
-    monkeypatch.setattr(mfa_routes, "record_event", fail_failed_attempt_event)
+    monkeypatch.setattr("app.api.routes.mfa.record_event", fail_failed_attempt_event)
 
     async def exercise(session: AsyncSession) -> None:
         user_id, access_request, challenge = await _create_challenge_records(session)
@@ -511,14 +535,35 @@ def test_expiry_event_failure_rolls_back_challenge_expiry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_settings(monkeypatch)
-    original_record_event = mfa_routes.record_event
+    original_record_event = record_security_event
 
-    def fail_expiry_event(*args: object, **kwargs: object) -> SecurityEvent:
-        if kwargs.get("event_type") == "MFA_EXPIRED":
+    def fail_expiry_event(
+        session: AsyncSession,
+        *,
+        event_type: str,
+        actor_id: UUID | None = None,
+        target_user_id: UUID | None = None,
+        access_request_id: UUID | None = None,
+        trust_evaluation_id: UUID | None = None,
+        decision: str | None = None,
+        risk_category: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> SecurityEvent:
+        if event_type == "MFA_EXPIRED":
             raise RuntimeError("expiry audit persistence failed")
-        return original_record_event(*args, **kwargs)
+        return original_record_event(
+            session,
+            event_type=event_type,
+            actor_id=actor_id,
+            target_user_id=target_user_id,
+            access_request_id=access_request_id,
+            trust_evaluation_id=trust_evaluation_id,
+            decision=decision,
+            risk_category=risk_category,
+            details=details,
+        )
 
-    monkeypatch.setattr(mfa_routes, "record_event", fail_expiry_event)
+    monkeypatch.setattr("app.api.routes.mfa.record_event", fail_expiry_event)
 
     async def exercise(session: AsyncSession) -> None:
         user_id, access_request, challenge = await _create_challenge_records(session)
@@ -621,14 +666,35 @@ def test_lock_event_failure_rolls_back_challenge_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_settings(monkeypatch)
-    original_record_event = mfa_routes.record_event
+    original_record_event = record_security_event
 
-    def fail_lock_event(*args: object, **kwargs: object) -> SecurityEvent:
-        if kwargs.get("event_type") == "MFA_LOCKED":
+    def fail_lock_event(
+        session: AsyncSession,
+        *,
+        event_type: str,
+        actor_id: UUID | None = None,
+        target_user_id: UUID | None = None,
+        access_request_id: UUID | None = None,
+        trust_evaluation_id: UUID | None = None,
+        decision: str | None = None,
+        risk_category: str | None = None,
+        details: Mapping[str, Any] | None = None,
+    ) -> SecurityEvent:
+        if event_type == "MFA_LOCKED":
             raise RuntimeError("lock audit persistence failed")
-        return original_record_event(*args, **kwargs)
+        return original_record_event(
+            session,
+            event_type=event_type,
+            actor_id=actor_id,
+            target_user_id=target_user_id,
+            access_request_id=access_request_id,
+            trust_evaluation_id=trust_evaluation_id,
+            decision=decision,
+            risk_category=risk_category,
+            details=details,
+        )
 
-    monkeypatch.setattr(mfa_routes, "record_event", fail_lock_event)
+    monkeypatch.setattr("app.api.routes.mfa.record_event", fail_lock_event)
 
     async def exercise(session: AsyncSession) -> None:
         user_id, access_request, challenge = await _create_challenge_records(session)

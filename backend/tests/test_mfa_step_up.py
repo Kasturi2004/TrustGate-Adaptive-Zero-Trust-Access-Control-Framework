@@ -327,6 +327,7 @@ def test_unavailable_challenge_or_credential_records_only_applicable_audit_event
     ]
     assert len(failed_events) == int(expected_failed_event)
     if expected_failed_event:
+        assert challenge is not None
         assert failed_events[0].actor_id == _USER_ID
         assert failed_events[0].access_request_id == challenge.access_request_id
         assert failed_events[0].details == {}
