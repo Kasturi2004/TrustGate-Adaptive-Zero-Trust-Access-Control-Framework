@@ -265,12 +265,6 @@ async def verify_totp_step_up(
             request.mfa_challenge_id, principal.id
         )
         if challenge is None:
-            record_event(
-                session,
-                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
-                actor_id=principal.id,
-                details={},
-            )
             await session.commit()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -279,13 +273,6 @@ async def verify_totp_step_up(
             )
 
         if challenge.status != "PENDING":
-            record_event(
-                session,
-                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
-                actor_id=principal.id,
-                access_request_id=challenge.access_request_id,
-                details={},
-            )
             await session.commit()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -297,7 +284,7 @@ async def verify_totp_step_up(
             challenge.status = "EXPIRED"
             record_event(
                 session,
-                event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                event_type="MFA_EXPIRED",
                 actor_id=principal.id,
                 access_request_id=challenge.access_request_id,
                 details={},
@@ -311,6 +298,13 @@ async def verify_totp_step_up(
 
         if challenge.attempt_count >= challenge.max_attempts:
             challenge.status = "LOCKED"
+            record_event(
+                session,
+                event_type="MFA_LOCKED",
+                actor_id=principal.id,
+                access_request_id=challenge.access_request_id,
+                details={},
+            )
             record_event(
                 session,
                 event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
@@ -342,6 +336,13 @@ async def verify_totp_step_up(
             challenge.attempt_count += 1
             if challenge.attempt_count >= challenge.max_attempts:
                 challenge.status = "LOCKED"
+                record_event(
+                    session,
+                    event_type="MFA_LOCKED",
+                    actor_id=principal.id,
+                    access_request_id=challenge.access_request_id,
+                    details={},
+                )
             record_event(
                 session,
                 event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",

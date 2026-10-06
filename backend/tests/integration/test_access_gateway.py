@@ -32,6 +32,7 @@ from app.services.access_gateway import (
     DeviceResult,
     PipelineResult,
     TrustFactorResult,
+    _persist_step_up_failsafe,
     access_gateway,
     get_security_pipeline,
 )
@@ -294,15 +295,56 @@ def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
             assert evaluation.status == "DEGRADED_FAILSAFE"
             assert evaluation.access_request_id == request.id
             assert await session.scalar(select(func.count()).select_from(PolicyDecision)) == 1
-            event = await session.scalar(select(SecurityEvent))
-            assert event is not None
-            assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+            events = list((await session.scalars(select(SecurityEvent))).all())
+            assert len(events) == 2
+            submission_events = [
+                row for row in events if row.event_type == "ACCESS_REQUEST_SUBMITTED"
+            ]
+            assert len(submission_events) == 1
+            assert submission_events[0].actor_id == user_id
+            assert submission_events[0].access_request_id == request.id
+            assert submission_events[0].details == {}
+            failsafe_events = [
+                row for row in events if row.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+            ]
+            assert len(failsafe_events) == 1
+            event = failsafe_events[0]
             assert event.actor_id == user_id
             assert event.access_request_id == request.id
             assert event.trust_evaluation_id == evaluation.id
             assert event.decision == "STEP_UP"
             assert event.risk_category == "MEDIUM"
             assert event.details == {}
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SecurityEvent)
+                    .where(
+                        SecurityEvent.event_type == "ACCESS_REQUEST_SUBMITTED",
+                        SecurityEvent.access_request_id == request.id,
+                    )
+                )
+                == 1
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SecurityEvent)
+                    .where(
+                        SecurityEvent.event_type == "PIPELINE_DEGRADED_FAILSAFE",
+                        SecurityEvent.access_request_id == request.id,
+                    )
+                )
+                == 1
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SecurityEvent)
+                    .where(SecurityEvent.event_type == "MFA_CHALLENGE_CREATED")
+                )
+                == 0
+            )
             assert _RAW_DEVICE_TOKEN not in repr(event.details)
             assert _GATEWAY_USER_AGENT not in repr(event.details)
 
@@ -310,6 +352,40 @@ def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
     finally:
         asyncio.run(remove_profile())
         asyncio.run(engine.dispose())
+
+
+def test_step_up_failsafe_commit_failure_rolls_back_request_and_events(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_commit(_session: AsyncSession) -> None:
+        raise RuntimeError("private commit failure")
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_commit)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, policy_id = await _create_prerequisites(session)
+        with pytest.raises(RuntimeError, match="private commit failure"):
+            await _persist_step_up_failsafe(
+                session,
+                actor_id=user_id,
+                resource=get_protected_resource("ops-dashboard"),
+                device_token=_RAW_DEVICE_TOKEN,
+                client_ip="192.0.2.18",
+                policy_version_id=policy_id,
+                stepup_score=Decimal("45"),
+                now=_NOW,
+                settings=Settings(
+                    app_env="test",
+                    cors_allowed_origin="http://localhost:5173",
+                    device_hash_secret=_GATEWAY_DEVICE_SECRET,
+                ),
+            )
+
+        for model in (AccessRequest, SecurityEvent):
+            assert await session.scalar(select(func.count()).select_from(model)) == 0
+
+    migrated_test_database.run_in_transaction(exercise)
 
 
 @pytest.mark.parametrize(
@@ -411,8 +487,32 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert device.device_hash != _RAW_DEVICE_TOKEN
         assert _RAW_DEVICE_TOKEN not in repr(device.device_hash)
         assert _GATEWAY_USER_AGENT not in repr(device)
-        event = await session.scalar(select(SecurityEvent))
-        assert event is not None
+        events = list((await session.scalars(select(SecurityEvent))).all())
+        submission_events = [
+            event for event in events if event.event_type == "ACCESS_REQUEST_SUBMITTED"
+        ]
+        assert len(submission_events) == 1
+        submission_event = submission_events[0]
+        assert submission_event.actor_id == user_id
+        assert submission_event.access_request_id == request.id
+        assert submission_event.details == {}
+
+        challenge_events = [
+            event for event in events if event.event_type == "MFA_CHALLENGE_CREATED"
+        ]
+        assert len(challenge_events) == int(decision == "STEP_UP")
+        if decision == "STEP_UP":
+            assert challenge_events[0].actor_id == user_id
+            assert challenge_events[0].access_request_id == request.id
+            assert challenge_events[0].details == {}
+
+        outcome_events = [
+            event
+            for event in events
+            if event.event_type not in {"ACCESS_REQUEST_SUBMITTED", "MFA_CHALLENGE_CREATED"}
+        ]
+        assert len(outcome_events) == 1
+        event = outcome_events[0]
         assert (
             event.event_type
             == {
@@ -523,6 +623,25 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             assert event.trust_evaluation_id == evaluation.id
             assert event.decision == "STEP_UP"
             assert event.details == {}
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SecurityEvent)
+                    .where(
+                        SecurityEvent.event_type == "PIPELINE_DEGRADED_FAILSAFE",
+                        SecurityEvent.access_request_id == request.id,
+                    )
+                )
+                == 1
+            )
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SecurityEvent)
+                    .where(SecurityEvent.event_type == "MFA_CHALLENGE_CREATED")
+                )
+                == 0
+            )
             assert str(rejected_policy_id) not in repr(event.details)
             assert "Trust result policy does not match" not in repr(event.details)
 
@@ -663,7 +782,7 @@ def test_commit_failure_rolls_back_application_rows_and_staged_event(
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.16",
                 user_agent=None,
-                pipeline=CompleteTestPipeline(_complete_result(policy_id, "BLOCK")),
+                pipeline=CompleteTestPipeline(_complete_result(policy_id, "STEP_UP")),
                 clock=FixedClock(_NOW),
             )
 
@@ -793,6 +912,17 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             assert event.decision == "STEP_UP"
             assert event.risk_category == "MEDIUM"
             assert event.details == {}
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(SecurityEvent)
+                    .where(
+                        SecurityEvent.event_type == "PIPELINE_DEGRADED_FAILSAFE",
+                        SecurityEvent.access_request_id == request.id,
+                    )
+                )
+                == 1
+            )
             assert _RAW_DEVICE_TOKEN not in repr(event.details)
             assert raw_user_agent not in repr(event.details)
             assert "Pipeline result contains the raw device token" not in repr(event.details)

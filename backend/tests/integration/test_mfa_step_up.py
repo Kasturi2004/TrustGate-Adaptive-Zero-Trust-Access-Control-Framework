@@ -23,6 +23,7 @@ from app.db.models.otp_challenge import OtpChallenge
 from app.db.models.policy_decision import PolicyDecision
 from app.db.models.policy_version import PolicyVersion
 from app.db.models.rate_limit_state import RateLimitState
+from app.db.models.security_event import SecurityEvent
 from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.session import create_async_engine_for_url
 from app.schemas.mfa import TotpStepUpVerificationRequest
@@ -372,9 +373,296 @@ def test_failed_totp_does_not_resolve_access_request(
         assert access_request.resolved_at is None
         assert challenge.status == "PENDING"
         assert challenge.attempt_count == 1
+        failed_events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                        SecurityEvent.access_request_id == access_request.id,
+                    )
+                )
+            ).all()
+        )
+        assert len(failed_events) == 1
+        assert failed_events[0].actor_id == user_id
+        assert failed_events[0].details == {}
+        assert (
+            await session.scalar(
+                select(SecurityEvent.id).where(
+                    SecurityEvent.event_type == "MFA_LOCKED",
+                    SecurityEvent.access_request_id == access_request.id,
+                )
+            )
+            is None
+        )
         credential = await session.get(MfaCredential, user_id)
         assert credential is not None
         assert credential.last_accepted_time_step is None
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_failed_attempt_event_failure_rolls_back_attempt_count(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_settings(monkeypatch)
+    original_record_event = mfa_routes.record_event
+
+    def fail_failed_attempt_event(*args: object, **kwargs: object) -> SecurityEvent:
+        if kwargs.get("event_type") == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED":
+            raise RuntimeError("failed-attempt audit persistence failed")
+        return original_record_event(*args, **kwargs)
+
+    monkeypatch.setattr(mfa_routes, "record_event", fail_failed_attempt_event)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, access_request, challenge = await _create_challenge_records(session)
+        request_id = access_request.id
+        challenge_id = challenge.id
+        await session.commit()
+        invalid_code = "000000" if pyotp.TOTP(_SECRET).at(_NOW) != "000000" else "000001"
+
+        with pytest.raises(HTTPException) as error:
+            await mfa_routes.verify_totp_step_up(
+                request=TotpStepUpVerificationRequest(
+                    mfa_challenge_id=challenge_id,
+                    code=invalid_code,
+                ),
+                http_request=_request(),
+                response=Response(),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                session=session,
+                clock=FixedClock(_NOW),
+            )
+        assert error.value.status_code == 500
+        await session.refresh(challenge)
+        assert challenge.status == "PENDING"
+        assert challenge.attempt_count == 0
+        assert (
+            await session.scalar(
+                select(SecurityEvent.id).where(
+                    SecurityEvent.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                    SecurityEvent.access_request_id == request_id,
+                )
+            )
+            is None
+        )
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_settings(monkeypatch)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, access_request, challenge = await _create_challenge_records(session)
+        challenge.expires_at = _NOW
+        await session.flush()
+
+        for _ in range(2):
+            with pytest.raises(HTTPException) as error:
+                await mfa_routes.verify_totp_step_up(
+                    request=TotpStepUpVerificationRequest(
+                        mfa_challenge_id=challenge.id,
+                        code=pyotp.TOTP(_SECRET).at(_NOW),
+                    ),
+                    http_request=_request(),
+                    response=Response(),
+                    principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                    session=session,
+                    clock=FixedClock(_NOW),
+                )
+            assert error.value.status_code == 400
+
+        await session.refresh(challenge)
+        assert challenge.status == "EXPIRED"
+        expiry_events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.event_type == "MFA_EXPIRED",
+                        SecurityEvent.access_request_id == access_request.id,
+                    )
+                )
+            ).all()
+        )
+        assert len(expiry_events) == 1
+        assert expiry_events[0].actor_id == user_id
+        assert expiry_events[0].details == {}
+        assert (
+            await session.scalar(
+                select(SecurityEvent.id).where(
+                    SecurityEvent.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                    SecurityEvent.access_request_id == access_request.id,
+                )
+            )
+            is None
+        )
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_expiry_event_failure_rolls_back_challenge_expiry(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_settings(monkeypatch)
+    original_record_event = mfa_routes.record_event
+
+    def fail_expiry_event(*args: object, **kwargs: object) -> SecurityEvent:
+        if kwargs.get("event_type") == "MFA_EXPIRED":
+            raise RuntimeError("expiry audit persistence failed")
+        return original_record_event(*args, **kwargs)
+
+    monkeypatch.setattr(mfa_routes, "record_event", fail_expiry_event)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, access_request, challenge = await _create_challenge_records(session)
+        challenge_id = challenge.id
+        access_request_id = access_request.id
+        challenge.expires_at = _NOW
+        await session.commit()
+
+        with pytest.raises(HTTPException) as error:
+            await mfa_routes.verify_totp_step_up(
+                request=TotpStepUpVerificationRequest(
+                    mfa_challenge_id=challenge_id,
+                    code=pyotp.TOTP(_SECRET).at(_NOW),
+                ),
+                http_request=_request(),
+                response=Response(),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                session=session,
+                clock=FixedClock(_NOW),
+            )
+        assert error.value.status_code == 500
+        await session.refresh(challenge)
+        assert challenge.status == "PENDING"
+        assert (
+            await session.scalar(
+                select(SecurityEvent.id).where(
+                    SecurityEvent.event_type == "MFA_EXPIRED",
+                    SecurityEvent.access_request_id == access_request_id,
+                )
+            )
+            is None
+        )
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_locked_challenge_event_is_persisted_once_with_lock_transition(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_settings(monkeypatch)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, access_request, challenge = await _create_challenge_records(session)
+        challenge.attempt_count = challenge.max_attempts - 1
+        request_id = access_request.id
+        challenge_id = challenge.id
+        invalid_code = "000000" if pyotp.TOTP(_SECRET).at(_NOW) != "000000" else "000001"
+
+        for _ in range(2):
+            with pytest.raises(HTTPException) as error:
+                await mfa_routes.verify_totp_step_up(
+                    request=TotpStepUpVerificationRequest(
+                        mfa_challenge_id=challenge_id,
+                        code=invalid_code,
+                    ),
+                    http_request=_request(),
+                    response=Response(),
+                    principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                    session=session,
+                    clock=FixedClock(_NOW),
+                )
+            assert error.value.status_code == 400
+
+        await session.refresh(challenge)
+        assert challenge.status == "LOCKED"
+        assert challenge.attempt_count == challenge.max_attempts
+        lock_events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.event_type == "MFA_LOCKED",
+                        SecurityEvent.access_request_id == request_id,
+                    )
+                )
+            ).all()
+        )
+        assert len(lock_events) == 1
+        assert lock_events[0].actor_id == user_id
+        assert lock_events[0].details == {}
+        failed_events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                        SecurityEvent.access_request_id == request_id,
+                    )
+                )
+            ).all()
+        )
+        assert len(failed_events) == 1
+        assert failed_events[0].actor_id == user_id
+        assert failed_events[0].details == {}
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_lock_event_failure_rolls_back_challenge_lock(
+    migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_settings(monkeypatch)
+    original_record_event = mfa_routes.record_event
+
+    def fail_lock_event(*args: object, **kwargs: object) -> SecurityEvent:
+        if kwargs.get("event_type") == "MFA_LOCKED":
+            raise RuntimeError("lock audit persistence failed")
+        return original_record_event(*args, **kwargs)
+
+    monkeypatch.setattr(mfa_routes, "record_event", fail_lock_event)
+
+    async def exercise(session: AsyncSession) -> None:
+        user_id, access_request, challenge = await _create_challenge_records(session)
+        challenge.attempt_count = challenge.max_attempts - 1
+        request_id = access_request.id
+        challenge_id = challenge.id
+        await session.commit()
+        invalid_code = "000000" if pyotp.TOTP(_SECRET).at(_NOW) != "000000" else "000001"
+
+        with pytest.raises(HTTPException) as error:
+            await mfa_routes.verify_totp_step_up(
+                request=TotpStepUpVerificationRequest(
+                    mfa_challenge_id=challenge_id,
+                    code=invalid_code,
+                ),
+                http_request=_request(),
+                response=Response(),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                session=session,
+                clock=FixedClock(_NOW),
+            )
+        assert error.value.status_code == 500
+        await session.refresh(challenge)
+        assert challenge.status == "PENDING"
+        assert challenge.attempt_count == challenge.max_attempts - 1
+        assert (
+            await session.scalar(
+                select(SecurityEvent.id).where(
+                    SecurityEvent.event_type == "MFA_LOCKED",
+                    SecurityEvent.access_request_id == request_id,
+                )
+            )
+            is None
+        )
 
     migrated_test_database.run_in_transaction(exercise)
 

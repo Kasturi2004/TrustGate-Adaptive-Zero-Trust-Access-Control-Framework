@@ -388,8 +388,22 @@ def test_trust_evaluation_failure_returns_sanitized_step_up(
     assert request.initial_decision == "STEP_UP"
     assert request.mfa_required is True
     assert request.final_outcome is None
-    event = next(row for row in added if isinstance(row, SecurityEvent))
-    assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+    events = [row for row in added if isinstance(row, SecurityEvent)]
+    assert len(events) == 2
+    submission_events = [
+        event for event in events if event.event_type == "ACCESS_REQUEST_SUBMITTED"
+    ]
+    failsafe_events = [
+        event for event in events if event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
+    ]
+    assert len(submission_events) == 1
+    assert submission_events[0].actor_id == _USER_ID
+    assert submission_events[0].access_request_id == request.id
+    assert submission_events[0].details == {}
+    assert len(failsafe_events) == 1
+    event = failsafe_events[0]
+    assert event.actor_id == _USER_ID
+    assert event.access_request_id == request.id
     assert event.decision == "STEP_UP"
     assert event.details == {}
     assert _USER_AGENT not in repr(event.details)

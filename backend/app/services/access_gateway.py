@@ -269,6 +269,12 @@ async def _persist_step_up_failsafe(
         )
     )
     await session.flush()
+    record_event(
+        session,
+        event_type="ACCESS_REQUEST_SUBMITTED",
+        actor_id=actor_id,
+        access_request_id=access_request_id,
+    )
     evaluation_id = uuid4()
     TrustEvaluationRepository(session).add(
         TrustEvaluation(
@@ -544,6 +550,12 @@ async def access_gateway(
         )
         AccessRequestRepository(session).add(access_request)
         await session.flush()
+        record_event(
+            session,
+            event_type="ACCESS_REQUEST_SUBMITTED",
+            actor_id=principal.id,
+            access_request_id=access_request_id,
+        )
 
         ContextSignalRepository(session).add(
             ContextSignal(
@@ -628,6 +640,12 @@ async def access_gateway(
                 )
             )
             await session.flush()
+            record_event(
+                session,
+                event_type="MFA_CHALLENGE_CREATED",
+                actor_id=principal.id,
+                access_request_id=access_request_id,
+            )
 
         record_event(
             session,

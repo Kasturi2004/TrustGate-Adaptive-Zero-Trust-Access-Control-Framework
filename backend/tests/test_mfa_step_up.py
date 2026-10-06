@@ -218,7 +218,63 @@ def test_invalid_code_consumes_challenge_attempt_and_locks_at_limit(
     assert challenge.attempt_count == 3
     assert challenge.status == "LOCKED"
     assert session.mfa_test_state["credential"].last_accepted_time_step is None
-    assert _events(session)[0].details == {}
+    lock_events = [event for event in _events(session) if event.event_type == "MFA_LOCKED"]
+    assert len(lock_events) == 1
+    assert lock_events[0].actor_id == _USER_ID
+    assert lock_events[0].access_request_id == challenge.access_request_id
+    assert lock_events[0].details == {}
+    assert sum(event.event_type == "MFA_LOCKED" for event in _events(session)) == 1
+    failed_events = [
+        event
+        for event in _events(session)
+        if event.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED"
+    ]
+    assert len(failed_events) == 1
+    assert failed_events[0].actor_id == _USER_ID
+    assert failed_events[0].access_request_id == challenge.access_request_id
+    assert failed_events[0].details == {}
+    assert all(event.event_type != "MFA_EXPIRED" for event in _events(session))
+
+    response = client.post(
+        "/auth/mfa/totp/step-up/verify",
+        json={"mfa_challenge_id": str(_CHALLENGE_ID), "code": code},
+    )
+    assert response.status_code == 400
+    assert sum(event.event_type == "MFA_LOCKED" for event in _events(session)) == 1
+
+    event_details = repr(lock_events[0].details)
+    assert _SECRET not in event_details
+    assert code not in event_details
+    assert challenge.otp_hash is None or challenge.otp_hash not in event_details
+
+
+def test_invalid_code_below_lock_threshold_does_not_record_lock_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    challenge = _challenge()
+    challenge.attempt_count = 1
+    session = _session(challenge, _credential())
+    client = _client(session, monkeypatch)
+    code = "000000" if pyotp.TOTP(_SECRET).at(_NOW) != "000000" else "000001"
+
+    response = client.post(
+        "/auth/mfa/totp/step-up/verify",
+        json={"mfa_challenge_id": str(_CHALLENGE_ID), "code": code},
+    )
+
+    assert response.status_code == 400
+    assert challenge.attempt_count == 2
+    assert challenge.status == "PENDING"
+    failed_events = [
+        event
+        for event in _events(session)
+        if event.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED"
+    ]
+    assert len(failed_events) == 1
+    assert failed_events[0].actor_id == _USER_ID
+    assert failed_events[0].access_request_id == challenge.access_request_id
+    assert failed_events[0].details == {}
+    assert all(event.event_type != "MFA_LOCKED" for event in _events(session))
 
 
 @pytest.mark.parametrize(
@@ -233,7 +289,7 @@ def test_invalid_code_consumes_challenge_attempt_and_locks_at_limit(
         (_challenge(), _credential(verified=False)),
     ],
 )
-def test_unavailable_challenge_or_credential_has_one_generic_failure(
+def test_unavailable_challenge_or_credential_records_only_applicable_audit_events(
     monkeypatch: pytest.MonkeyPatch,
     challenge: OtpChallenge | None,
     credential: MfaCredential | None,
@@ -253,10 +309,59 @@ def test_unavailable_challenge_or_credential_has_one_generic_failure(
 
     assert response.status_code == 400
     assert response.json()["error"]["message"] == "MFA verification failed."
-    assert _events(session)[0].details == {}
     if challenge is not None and challenge.expires_at <= _NOW:
         assert challenge.status == "EXPIRED"
+    assert sum(event.event_type == "MFA_EXPIRED" for event in _events(session)) == int(
+        challenge is not None and challenge.status == "EXPIRED"
+    )
+    assert all(event.event_type != "MFA_LOCKED" for event in _events(session))
+    expected_failed_event = (
+        challenge is not None
+        and challenge.status == "PENDING"
+        and (credential is None or not credential.enabled or credential.verified_at is None)
+    )
+    failed_events = [
+        event
+        for event in _events(session)
+        if event.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED"
+    ]
+    assert len(failed_events) == int(expected_failed_event)
+    if expected_failed_event:
+        assert failed_events[0].actor_id == _USER_ID
+        assert failed_events[0].access_request_id == challenge.access_request_id
+        assert failed_events[0].details == {}
     assert credential is None or credential.last_accepted_time_step == 123
+
+
+def test_expired_challenge_records_one_associated_expiry_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    challenge = _challenge(expires_at=_NOW)
+    session = _session(challenge, _credential())
+    client = _client(session, monkeypatch)
+
+    for _ in range(2):
+        response = client.post(
+            "/auth/mfa/totp/step-up/verify",
+            json={
+                "mfa_challenge_id": str(_CHALLENGE_ID),
+                "code": pyotp.TOTP(_SECRET).at(_NOW),
+            },
+        )
+        assert response.status_code == 400
+
+    expiry_events = [event for event in _events(session) if event.event_type == "MFA_EXPIRED"]
+    assert len(expiry_events) == 1
+    assert expiry_events[0].actor_id == _USER_ID
+    assert expiry_events[0].access_request_id == challenge.access_request_id
+    assert expiry_events[0].details == {}
+    assert all(
+        event.event_type != "MFA_TOTP_STEP_UP_VERIFICATION_FAILED" for event in _events(session)
+    )
+    assert challenge.status == "EXPIRED"
+    event_details = repr(expiry_events[0].details)
+    assert _SECRET not in event_details
+    assert challenge.otp_hash is None or challenge.otp_hash not in event_details
 
 
 def test_same_time_step_is_rejected_on_a_second_pending_challenge(

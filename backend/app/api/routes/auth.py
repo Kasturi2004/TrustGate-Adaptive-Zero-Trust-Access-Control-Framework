@@ -109,11 +109,18 @@ async def login(
         ) from None
 
     if 200 <= upstream.status_code < 300:
+        actor_id = _authenticated_user_id(upstream)
+        if actor_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_UPSTREAM_FAILURE,
+            ) from None
+
         async with session.begin():
             record_event(
                 session,
                 event_type="LOGIN_SUCCESS",
-                actor_id=_authenticated_user_id(upstream),
+                actor_id=actor_id,
                 details={"email_identifier": email_identifier(payload.email)},
             )
         return Response(

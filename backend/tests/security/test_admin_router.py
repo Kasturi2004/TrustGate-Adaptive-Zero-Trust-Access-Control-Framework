@@ -92,6 +92,46 @@ def test_admin_profile_can_access_verification_route(monkeypatch: pytest.MonkeyP
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     request_session.get.assert_awaited_once_with(Profile, _USER_ID)
+    request_session.add.assert_called_once()
+    request_session.commit.assert_awaited_once()
+    audit_session.add.assert_not_called()
+    event = request_session.add.call_args.args[0]
+    assert isinstance(event, SecurityEvent)
+    assert event.event_type == "ADMIN_ACCESS"
+    assert event.actor_id == _USER_ID
+    assert event.decision == "ALLOW"
+    assert event.risk_category == "LOW"
+    assert event.details == {"path": "/admin/verification", "method": "GET"}
+    assert "Authorization" not in repr(event.details)
+    assert _token(role="ADMIN") not in repr(event.details)
+
+
+def test_each_successful_admin_request_records_one_access_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_session = AsyncMock(spec=AsyncSession)
+    request_session.get.return_value = _profile(role="ADMIN")
+    audit_session = AsyncMock(spec=AsyncSession)
+    client = _admin_client(request_session, audit_session, monkeypatch)
+
+    responses = [
+        client.get(
+            "/admin/verification",
+            headers={"Authorization": f"Bearer {_token()}", "X-Request-ID": f"admin-{n}"},
+        )
+        for n in (1, 2)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    events = [call.args[0] for call in request_session.add.call_args_list]
+    assert len(events) == 2
+    assert all(isinstance(event, SecurityEvent) for event in events)
+    assert [event.event_type for event in events] == ["ADMIN_ACCESS", "ADMIN_ACCESS"]
+    assert all(event.actor_id == _USER_ID for event in events)
+    assert all(
+        event.details == {"path": "/admin/verification", "method": "GET"} for event in events
+    )
+    assert request_session.commit.await_count == 2
     audit_session.add.assert_not_called()
 
 
@@ -132,6 +172,58 @@ def test_user_profile_gets_forbidden_envelope_even_with_admin_jwt_claims(
         "path": "/admin/verification",
         "method": "GET",
     }
+    assert audit_session.add.call_count == 1
+    assert event.event_type != "ADMIN_ACCESS"
+
+
+def test_each_unauthorized_admin_request_records_one_redacted_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request_session = AsyncMock(spec=AsyncSession)
+    request_session.get.return_value = _profile(role="USER")
+    audit_session = AsyncMock(spec=AsyncSession)
+    client = _admin_client(request_session, audit_session, monkeypatch)
+    authorization = f"Bearer {_token(role='ADMIN')}"
+
+    responses = [
+        client.get(
+            "/admin/verification",
+            headers={"Authorization": authorization, "X-Request-ID": f"denied-{attempt}"},
+        )
+        for attempt in (1, 2)
+    ]
+
+    assert [response.status_code for response in responses] == [403, 403]
+    assert audit_session.add.call_count == 2
+    assert audit_session.commit.await_count == 2
+    events = [call.args[0] for call in audit_session.add.call_args_list]
+    assert all(isinstance(event, SecurityEvent) for event in events)
+    assert [event.event_type for event in events] == [
+        "ADMIN_UNAUTHORIZED_ATTEMPT",
+        "ADMIN_UNAUTHORIZED_ATTEMPT",
+    ]
+    assert all(event.actor_id == _USER_ID for event in events)
+    assert all(
+        event.details
+        == {
+            "attempted_role": "ADMIN",
+            "path": "/admin/verification",
+            "method": "GET",
+        }
+        for event in events
+    )
+    sensitive_values = (
+        authorization,
+        "password",
+        "otp",
+        "secret",
+        "rate-limit-key",
+    )
+    assert all(
+        sensitive_value not in repr(event.details)
+        for event in events
+        for sensitive_value in sensitive_values
+    )
 
 
 @pytest.mark.parametrize("authorization", [None, "Bearer invalid"])
@@ -149,6 +241,7 @@ def test_admin_router_keeps_unauthenticated_requests_at_401(
     assert response.status_code == 401
     assert response.json()["error"]["code"] == "UNAUTHENTICATED"
     request_session.get.assert_not_awaited()
+    request_session.add.assert_not_called()
     audit_session.add.assert_not_called()
 
 

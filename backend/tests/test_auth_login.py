@@ -26,6 +26,8 @@ _ACCESS_TOKEN = "test-access-token-never-log"
 _REFRESH_TOKEN = "test-refresh-token-never-log"
 _OTP = "test-otp-never-store"
 _NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
+_LOGIN_USER_ID = "e77184cf-0f33-44cf-9ec1-0789a66c2cab"
+_VALID_UPSTREAM_RESPONSE = f'{{"user":{{"id":"{_LOGIN_USER_ID}"}}}}'.encode()
 
 
 class _Transaction:
@@ -175,7 +177,8 @@ def test_valid_credentials_are_proxied_and_token_response_is_relayed(
 ) -> None:
     body = (
         b'{"access_token":"test-access-token-never-log",'
-        b'"refresh_token":"test-refresh-token-never-log","token_type":"bearer"}'
+        b'"refresh_token":"test-refresh-token-never-log","token_type":"bearer",'
+        b'"user":{"id":"e77184cf-0f33-44cf-9ec1-0789a66c2cab"}}'
     )
     mock_client = _MockClient(_upstream_response(200, body))
     client = _client(monkeypatch, mock_client)
@@ -202,7 +205,7 @@ def test_valid_credentials_are_proxied_and_token_response_is_relayed(
 def test_successful_login_records_redacted_security_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    user_id = "e77184cf-0f33-44cf-9ec1-0789a66c2cab"
+    user_id = _LOGIN_USER_ID
     body = (
         '{"access_token":"test-access-token-never-log",'
         '"refresh_token":"test-refresh-token-never-log",'
@@ -218,6 +221,7 @@ def test_successful_login_records_redacted_security_event(
     )
 
     assert response.status_code == 200
+    runtime.session.add.assert_called_once()
     event = runtime.session.add.call_args.args[0]
     assert event.event_type == "LOGIN_SUCCESS"
     assert str(event.actor_id) == user_id
@@ -230,6 +234,98 @@ def test_successful_login_records_redacted_security_event(
     assert _ACCESS_TOKEN not in str(event.details)
     assert _REFRESH_TOKEN not in str(event.details)
     runtime.session.commit.assert_not_awaited()
+
+
+def test_each_independent_successful_login_records_one_success_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = _LOGIN_USER_ID
+    body = (
+        '{"access_token":"test-access-token-never-log",'
+        '"refresh_token":"test-refresh-token-never-log",'
+        f'"user":{{"id":"{user_id}"}}'
+        "}"
+    ).encode()
+    runtime = _RateLimitRuntime()
+    client = _client(monkeypatch, _MockClient(_upstream_response(200, body)), runtime=runtime)
+
+    responses = [
+        client.post(
+            "/auth/login",
+            json={"email": "user@example.test", "password": _PASSWORD},
+            headers={"X-Request-ID": f"login-success-{attempt}"},
+        )
+        for attempt in (1, 2)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    events = [call.args[0] for call in runtime.session.add.call_args_list]
+    assert [event.event_type for event in events] == ["LOGIN_SUCCESS", "LOGIN_SUCCESS"]
+    assert [str(event.actor_id) for event in events] == [user_id, user_id]
+    assert all(set(event.details) == {"email_identifier"} for event in events)
+    sensitive_values = (
+        _PASSWORD,
+        _ACCESS_TOKEN,
+        _REFRESH_TOKEN,
+        "user@example.test",
+        "Authorization",
+        "secret",
+    )
+    assert all(
+        sensitive_value not in repr(event.details)
+        for event in events
+        for sensitive_value in sensitive_values
+    )
+    assert runtime.session.add.call_count == 2
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"access_token":"test-access-token-never-log",'
+        b'"refresh_token":"test-refresh-token-never-log","user":{}}',
+        b'{"access_token":"test-access-token-never-log",'
+        b'"refresh_token":"test-refresh-token-never-log",'
+        b'"user":{"id":"malformed-user-id"}}',
+        b'{"access_token":"test-access-token-never-log",'
+        b'"refresh_token":"test-refresh-token-never-log","user":',
+    ],
+    ids=["missing-user-id", "invalid-user-id", "malformed-user-json"],
+)
+def test_success_response_without_parseable_identity_returns_safe_upstream_error(
+    monkeypatch: pytest.MonkeyPatch,
+    body: bytes,
+) -> None:
+    runtime = _RateLimitRuntime()
+    client = _client(
+        monkeypatch,
+        _MockClient(_upstream_response(200, body)),
+        runtime=runtime,
+    )
+
+    response = client.post(
+        "/auth/login",
+        json={"email": "user@example.test", "password": _PASSWORD},
+        headers={"X-Request-ID": "malformed-upstream-identity"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "error": {
+            "code": "HTTP_502",
+            "message": "An unexpected error occurred.",
+            "request_id": "malformed-upstream-identity",
+        }
+    }
+    runtime.session.add.assert_not_called()
+    for sensitive_value in (
+        _PASSWORD,
+        _ACCESS_TOKEN,
+        _REFRESH_TOKEN,
+        "malformed-user-id",
+        body.decode(),
+    ):
+        assert sensitive_value not in response.text
 
 
 def test_successful_login_security_event_failure_returns_safe_500_and_rolls_back(
@@ -284,15 +380,17 @@ def test_successful_login_security_event_failure_returns_safe_500_and_rolls_back
     assert runtime.transaction.committed is False
 
 
+@pytest.mark.parametrize("upstream_status", [400, 401, 422])
 def test_failed_login_records_actorless_redacted_event_and_keeps_generic_response(
     monkeypatch: pytest.MonkeyPatch,
+    upstream_status: int,
 ) -> None:
     email = "user@example.test"
     runtime = _RateLimitRuntime()
     upstream_message = f"{email} {_PASSWORD} {_ACCESS_TOKEN} {_REFRESH_TOKEN}"
     client = _client(
         monkeypatch,
-        _MockClient(_upstream_response(400, upstream_message.encode())),
+        _MockClient(_upstream_response(upstream_status, upstream_message.encode())),
         runtime=runtime,
     )
 
@@ -305,8 +403,12 @@ def test_failed_login_records_actorless_redacted_event_and_keeps_generic_respons
     assert response.status_code == 401
     assert response.json()["error"]["message"] == "Invalid email or password."
     assert upstream_message not in response.text
+    runtime.session.add.assert_called_once()
     event = runtime.session.add.call_args.args[0]
     assert event.event_type == "LOGIN_FAILURE"
+    assert all(
+        call.args[0].event_type != "LOGIN_SUCCESS" for call in runtime.session.add.call_args_list
+    )
     assert event.actor_id is None
     assert set(event.details) == {"email_identifier"}
     assert event.details["email_identifier"] == security_events.email_identifier(email)
@@ -314,13 +416,50 @@ def test_failed_login_records_actorless_redacted_event_and_keeps_generic_respons
     assert _PASSWORD not in str(event.details)
     assert _ACCESS_TOKEN not in str(event.details)
     assert _REFRESH_TOKEN not in str(event.details)
+    assert all(
+        sensitive_value not in repr(event.details)
+        for sensitive_value in ("authorization", "secret", "otp", "rate-limit-test-secret")
+    )
+
+
+def test_each_independent_failed_login_records_one_failure_event(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    email = "user@example.test"
+    upstream_message = f"{email} {_PASSWORD} {_ACCESS_TOKEN} {_REFRESH_TOKEN}"
+    runtime = _RateLimitRuntime()
+    client = _client(
+        monkeypatch,
+        _MockClient(_upstream_response(401, upstream_message.encode())),
+        runtime=runtime,
+    )
+
+    responses = [
+        client.post(
+            "/auth/login",
+            json={"email": email, "password": _PASSWORD},
+            headers={"X-Request-ID": f"login-failure-{attempt}"},
+        )
+        for attempt in (1, 2)
+    ]
+
+    assert [response.status_code for response in responses] == [401, 401]
+    events = [call.args[0] for call in runtime.session.add.call_args_list]
+    assert [event.event_type for event in events] == ["LOGIN_FAILURE", "LOGIN_FAILURE"]
+    assert all(event.actor_id is None for event in events)
+    assert all(set(event.details) == {"email_identifier"} for event in events)
+    assert all(email not in repr(event.details) for event in events)
+    assert all(_PASSWORD not in repr(event.details) for event in events)
+    assert all(_ACCESS_TOKEN not in repr(event.details) for event in events)
+    assert all(_REFRESH_TOKEN not in repr(event.details) for event in events)
+    assert runtime.session.add.call_count == 2
 
 
 def test_slowapi_rejection_does_not_create_login_attempt_event(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _RateLimitRuntime()
-    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
     client = _client(monkeypatch, mock_client, runtime=runtime)
 
     for _attempt in range(5):
@@ -344,7 +483,11 @@ def test_slowapi_rejection_does_not_create_login_attempt_event(
 def test_login_is_limited_to_five_requests_and_health_is_not_limited(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_client = _MockClient(_upstream_response(200, b'{"access_token":"ok"}'))
+    mock_client = _MockClient(
+        _upstream_response(
+            200, b'{"access_token":"ok","user":{"id":"' + _LOGIN_USER_ID.encode() + b'"}}'
+        )
+    )
     client = _client(monkeypatch, mock_client)
 
     for attempt in range(5):
@@ -381,7 +524,11 @@ def test_login_is_limited_to_five_requests_and_health_is_not_limited(
 def test_forwarded_headers_do_not_change_the_login_limiter_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mock_client = _MockClient(_upstream_response(200, b'{"access_token":"ok"}'))
+    mock_client = _MockClient(
+        _upstream_response(
+            200, b'{"access_token":"ok","user":{"id":"' + _LOGIN_USER_ID.encode() + b'"}}'
+        )
+    )
     client = _client(monkeypatch, mock_client)
 
     for attempt in range(5):
@@ -406,7 +553,11 @@ def test_postgres_limiter_consumes_both_keys_in_sorted_order_and_same_transactio
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _RateLimitRuntime()
-    mock_client = _MockClient(_upstream_response(200, b'{"access_token":"ok"}'))
+    mock_client = _MockClient(
+        _upstream_response(
+            200, b'{"access_token":"ok","user":{"id":"' + _LOGIN_USER_ID.encode() + b'"}}'
+        )
+    )
     client = _client(monkeypatch, mock_client, runtime=runtime)
 
     response = client.post(
@@ -445,7 +596,7 @@ def test_blocked_ip_commits_admitted_account_key_and_never_calls_supabase(
     runtime = _RateLimitRuntime()
     ip_key = ip_rate_limit_key("192.0.2.10")
     runtime.counters[ip_key] = 5
-    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
     client = _client(monkeypatch, mock_client, runtime=runtime)
 
     response = client.post(
@@ -489,7 +640,7 @@ def test_blocked_account_commits_admitted_ip_key_and_never_calls_supabase(
         ),
     )
     runtime.counters[account_key] = 5
-    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
     client = _client(monkeypatch, mock_client, runtime=runtime)
 
     response = client.post(
@@ -511,7 +662,7 @@ def test_rate_limit_database_failure_rolls_back_and_does_not_call_supabase(
 ) -> None:
     runtime = _RateLimitRuntime()
     runtime.fail_on_call = 2
-    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
     client = _client(
         monkeypatch,
         mock_client,
@@ -544,7 +695,7 @@ def test_different_accounts_from_same_ip_share_persistent_ip_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _RateLimitRuntime()
-    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
     client = _client(monkeypatch, mock_client, runtime=runtime)
 
     for attempt in range(5):
@@ -570,7 +721,7 @@ def test_same_account_from_different_ips_shares_persistent_account_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runtime = _RateLimitRuntime()
-    mock_client = _MockClient(_upstream_response(200, b"{}"))
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
 
     for attempt in range(5):
         limiter.reset()
@@ -653,7 +804,8 @@ def test_missing_or_malformed_fields_return_422(
     payload: dict[str, object],
 ) -> None:
     mock_client = _MockClient(_upstream_response(200, b"{}"))
-    client = _client(monkeypatch, mock_client)
+    runtime = _RateLimitRuntime()
+    client = _client(monkeypatch, mock_client, runtime=runtime)
 
     response = client.post("/auth/login", json=payload)
 
@@ -661,13 +813,15 @@ def test_missing_or_malformed_fields_return_422(
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
     assert response.json()["error"]["message"] == "Request validation failed."
     mock_client.post.assert_not_awaited()
+    runtime.session.add.assert_not_called()
 
 
 def test_malformed_email_returns_422_without_calling_supabase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mock_client = _MockClient(_upstream_response(200, b"{}"))
-    client = _client(monkeypatch, mock_client)
+    runtime = _RateLimitRuntime()
+    client = _client(monkeypatch, mock_client, runtime=runtime)
 
     response = client.post(
         "/auth/login",
@@ -684,14 +838,17 @@ def test_malformed_email_returns_422_without_calling_supabase(
         }
     }
     mock_client.post.assert_not_awaited()
+    runtime.session.add.assert_not_called()
 
 
 def test_upstream_network_failure_returns_safe_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    runtime = _RateLimitRuntime()
     client = _client(
         monkeypatch,
         _MockClient(error=httpx.ConnectError("upstream body with sensitive details")),
+        runtime=runtime,
     )
 
     response = client.post(
@@ -704,12 +861,15 @@ def test_upstream_network_failure_returns_safe_error(
     assert response.json()["error"]["message"] == "An unexpected error occurred."
     assert "sensitive details" not in response.text
     assert _PASSWORD not in response.text
+    runtime.session.add.assert_not_called()
 
 
 def test_upstream_server_error_body_is_not_exposed(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime = _RateLimitRuntime()
     client = _client(
         monkeypatch,
         _MockClient(_upstream_response(503, b"upstream secret response body")),
+        runtime=runtime,
     )
 
     response = client.post(
@@ -719,6 +879,7 @@ def test_upstream_server_error_body_is_not_exposed(monkeypatch: pytest.MonkeyPat
 
     assert response.status_code == 502
     assert "upstream secret response body" not in response.text
+    runtime.session.add.assert_not_called()
 
 
 def test_login_error_uses_request_id_and_existing_error_envelope(
@@ -766,7 +927,8 @@ def test_password_and_token_values_are_not_logged(
 ) -> None:
     body = (
         b'{"access_token":"test-access-token-never-log",'
-        b'"refresh_token":"test-refresh-token-never-log"}'
+        b'"refresh_token":"test-refresh-token-never-log",'
+        b'"user":{"id":"e77184cf-0f33-44cf-9ec1-0789a66c2cab"}}'
     )
     client = _client(monkeypatch, _MockClient(_upstream_response(200, body)))
 
