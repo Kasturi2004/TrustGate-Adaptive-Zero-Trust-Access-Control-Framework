@@ -57,9 +57,7 @@ async def remove_auth_user_profile(test_database_url: str, *, user_id: UUID) -> 
             await connection.execute(
                 text("DELETE FROM public.profiles WHERE id = :id"), {"id": user_id}
             )
-            await connection.execute(
-                text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id}
-            )
+            await connection.execute(text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id})
     finally:
         await engine.dispose()
 
