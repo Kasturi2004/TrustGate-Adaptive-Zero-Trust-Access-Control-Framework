@@ -133,7 +133,7 @@ def _session(
         elif "mfa_credentials" in query:
             result.first.return_value = state["credential"]
         elif "access_requests" in query and query.lstrip().startswith("UPDATE"):
-            result.first.return_value = object()
+            result.first.return_value = MagicMock(final_outcome="ALLOW")
         else:
             raise AssertionError(f"Unexpected MFA test query: {query}")
         return result

@@ -287,6 +287,7 @@ async def verify_totp_step_up(
                 event_type="MFA_EXPIRED",
                 actor_id=principal.id,
                 access_request_id=challenge.access_request_id,
+                decision="STEP_UP",
                 details={},
             )
             await session.commit()
@@ -303,6 +304,7 @@ async def verify_totp_step_up(
                 event_type="MFA_LOCKED",
                 actor_id=principal.id,
                 access_request_id=challenge.access_request_id,
+                decision="STEP_UP",
                 details={},
             )
             record_event(
@@ -341,6 +343,7 @@ async def verify_totp_step_up(
                     event_type="MFA_LOCKED",
                     actor_id=principal.id,
                     access_request_id=challenge.access_request_id,
+                    decision="STEP_UP",
                     details={},
                 )
             record_event(
@@ -380,6 +383,7 @@ async def verify_totp_step_up(
             event_type="MFA_TOTP_STEP_UP_VERIFICATION_SUCCEEDED",
             actor_id=principal.id,
             access_request_id=challenge.access_request_id,
+            decision=resolved_request.final_outcome,
             details={},
         )
         record_event(

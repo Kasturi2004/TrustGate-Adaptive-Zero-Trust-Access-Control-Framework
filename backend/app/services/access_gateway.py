@@ -274,6 +274,8 @@ async def _persist_step_up_failsafe(
         event_type="ACCESS_REQUEST_SUBMITTED",
         actor_id=actor_id,
         access_request_id=access_request_id,
+        decision="STEP_UP",
+        risk_category="MEDIUM",
     )
     evaluation_id = uuid4()
     TrustEvaluationRepository(session).add(
@@ -555,6 +557,8 @@ async def access_gateway(
             event_type="ACCESS_REQUEST_SUBMITTED",
             actor_id=principal.id,
             access_request_id=access_request_id,
+            decision=policy_decision.decision,
+            risk_category=evaluated.risk_classification,
         )
 
         ContextSignalRepository(session).add(

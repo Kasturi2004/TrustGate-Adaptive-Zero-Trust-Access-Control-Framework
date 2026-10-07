@@ -12,7 +12,8 @@ from app.db.models.security_event import SecurityEvent
 from app.db.repositories.otp_challenge import OtpChallengeRepository
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.db.repositories.security_event import SecurityEventRepository
-from sqlalchemy import text
+from app.services.security_events import record_event
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.integration.database import ScratchDatabase
@@ -263,5 +264,28 @@ def test_security_event_repository_filters_orders_and_includes_time_bounds(
         assert all(event.created_at == _CREATED_AT for event in inclusive_range)
         assert inclusive_range[0].details == {"tag": "tie-high-id"}
         assert inclusive_range[1].details == {"tag": "tie-low-id"}
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_security_event_writer_uses_database_server_timestamp(
+    migrated_test_database: ScratchDatabase,
+) -> None:
+    async def exercise(session: AsyncSession) -> None:
+        actor_id, _ = await _create_access_request(session)
+        event = record_event(
+            session,
+            event_type="LOGIN_SUCCESS",
+            actor_id=actor_id,
+        )
+
+        assert event.created_at is None
+        await session.flush()
+
+        persisted_created_at = await session.scalar(
+            select(SecurityEvent.created_at).where(SecurityEvent.id == event.id)
+        )
+        assert event.created_at is not None
+        assert persisted_created_at == event.created_at
 
     migrated_test_database.run_in_transaction(exercise)

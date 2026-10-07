@@ -40,8 +40,16 @@ def upgrade() -> None:
     op.execute("REVOKE EXECUTE ON FUNCTION public.reject_security_event_mutation() FROM PUBLIC")
     op.execute(
         """
-        CREATE TRIGGER trg_security_events_append_only
-        BEFORE UPDATE OR DELETE ON public.security_events
+        CREATE TRIGGER trg_security_events_no_update
+        BEFORE UPDATE ON public.security_events
+        FOR EACH ROW
+        EXECUTE FUNCTION public.reject_security_event_mutation()
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER trg_security_events_no_delete
+        BEFORE DELETE ON public.security_events
         FOR EACH ROW
         EXECUTE FUNCTION public.reject_security_event_mutation()
         """
@@ -50,7 +58,8 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Remove append-only protection and restore the prior runtime privileges."""
-    op.execute("DROP TRIGGER trg_security_events_append_only ON public.security_events")
+    op.execute("DROP TRIGGER trg_security_events_no_delete ON public.security_events")
+    op.execute("DROP TRIGGER trg_security_events_no_update ON public.security_events")
     op.execute("DROP FUNCTION public.reject_security_event_mutation()")
     op.execute("REVOKE ALL PRIVILEGES ON TABLE public.security_events FROM trustgate_app")
     op.execute("GRANT SELECT, INSERT ON TABLE public.security_events TO trustgate_app")
