@@ -18,6 +18,7 @@ vi.mock("../lib/supabase.ts", () => ({
 }));
 
 import { supabase } from "../lib/supabase.ts";
+import { fetchAccessHistory } from "./accessHistory.ts";
 import { apiRequest } from "./client.ts";
 
 const ACCESS_TOKEN = "test-current-access-token";
@@ -54,6 +55,18 @@ describe("apiRequest", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://api.example.test/profile");
+    expect(init.method).toBe("GET");
+    expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${ACCESS_TOKEN}`);
+    expect(getSessionMock).toHaveBeenCalledOnce();
+  });
+
+  it("sends Access History requests with the current Supabase session token", async () => {
+    fetchMock.mockResolvedValue(new Response("[]", { status: 200 }));
+
+    await fetchAccessHistory(1, 10);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://api.example.test/access/history?page=1&page_size=10");
     expect(init.method).toBe("GET");
     expect(new Headers(init.headers).get("Authorization")).toBe(`Bearer ${ACCESS_TOKEN}`);
     expect(getSessionMock).toHaveBeenCalledOnce();

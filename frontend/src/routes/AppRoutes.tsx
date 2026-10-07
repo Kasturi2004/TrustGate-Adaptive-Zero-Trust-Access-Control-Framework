@@ -7,6 +7,7 @@ import { PlaceholderPage } from "../pages/PlaceholderPage.tsx";
 import { RequestAccessPage } from "../pages/RequestAccessPage.tsx";
 import { SignupPage } from "../pages/SignupPage.tsx";
 import { AdminRoute } from "./AdminRoute.tsx";
+import { AccessHistoryPage } from "../pages/AccessHistoryPage.tsx";
 
 export function AppRoutes() {
   return (
@@ -37,7 +38,22 @@ export function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route path="/history" element={<PlaceholderPage title="Access history" />} />
+      <Route
+        path="/history"
+        element={
+          <ProtectedRoute>
+            <AccessHistoryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/history/:accessRequestId"
+        element={
+          <ProtectedRoute>
+            <AccessHistoryPage />
+          </ProtectedRoute>
+        }
+      />
       <Route path="/account" element={<PlaceholderPage title="Account" />} />
       <Route
         path="/admin/overview"

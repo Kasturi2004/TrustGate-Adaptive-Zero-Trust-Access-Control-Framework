@@ -96,4 +96,20 @@ describe("AdminRoute", () => {
       expect(route.props.element?.type).toBe(AdminRoute);
     }
   });
+
+  it("protects both access history and access request detail routes", () => {
+    const routeElements = (AppRoutes() as TestElement).props.children as TestElement[];
+    const historyRoutes = routeElements.filter(
+      (route) => typeof route.props.path === "string" && route.props.path.startsWith("/history"),
+    );
+
+    expect(historyRoutes.map((route) => route.props.path)).toEqual([
+      "/history",
+      "/history/:accessRequestId",
+    ]);
+    for (const route of historyRoutes) {
+      expect(route.type).toBe(Route);
+      expect(route.props.element?.type).toBe(ProtectedRoute);
+    }
+  });
 });

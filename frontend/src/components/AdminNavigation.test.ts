@@ -43,6 +43,8 @@ describe("admin navigation visibility", () => {
     expect(textContent(Header())).not.toContain("Admin");
     expect(textContent(HomePage())).not.toContain("Security overview");
     expect(textContent(HomePage())).not.toContain("Security events");
+    expect(textContent(Header())).toContain("Access history");
     expect(textContent(HomePage())).toContain("Every access request is evaluated independently");
+    expect(textContent(HomePage())).toContain("Review your access activity.");
   });
 });
