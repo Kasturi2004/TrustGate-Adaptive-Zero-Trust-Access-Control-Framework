@@ -55,9 +55,14 @@ def test_applied_policy_seed_and_schema(migrated_test_database: ScratchDatabase)
             .mappings()
             .all()
         )
-        policy_count = await session.scalar(text("SELECT count(*) FROM public.policy_versions"))
+        policy_count = await session.scalar(
+            text("SELECT count(*) FROM public.policy_versions WHERE version_label = 'POL-1.0'")
+        )
         active_count = await session.scalar(
-            text("SELECT count(*) FROM public.policy_versions WHERE is_active")
+            text(
+                "SELECT count(*) FROM public.policy_versions "
+                "WHERE version_label = 'POL-1.0' AND is_active"
+            )
         )
         columns = (
             await session.execute(

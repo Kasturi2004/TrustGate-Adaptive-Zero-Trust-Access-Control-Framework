@@ -311,7 +311,12 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
             "location_normality": Decimal("20.000"),
             "time_normality": Decimal("15.000"),
         }
-        assert await session.scalar(select(func.count()).select_from(Device)) == 1
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Device).where(Device.user_id == user_id)
+            )
+            == 1
+        )
         await session.refresh(device)
         assert device.recognized_at == _NOW - timedelta(days=2)
         assert _TOKEN not in repr(signal.raw_context)

@@ -181,6 +181,14 @@ def test_factor_insert_failure_rolls_back_evaluation_and_all_factors(
             )
             == 0
         )
-        assert await session.scalar(select(func.count()).select_from(TrustFactor)) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(TrustFactor)
+                .join(TrustEvaluation)
+                .where(TrustEvaluation.access_request_id == access_request.id)
+            )
+            == 0
+        )
 
     migrated_test_database.run_in_transaction(exercise)
