@@ -90,7 +90,7 @@ describe("AdminRoute", () => {
       (route) => typeof route.props.path === "string" && route.props.path.startsWith("/admin/"),
     );
 
-    expect(adminRoutes).toHaveLength(2);
+    expect(adminRoutes).toHaveLength(3);
     for (const route of adminRoutes) {
       expect(route.type).toBe(Route);
       expect(route.props.element?.type).toBe(AdminRoute);

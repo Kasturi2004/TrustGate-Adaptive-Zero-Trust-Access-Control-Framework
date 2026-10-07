@@ -8,6 +8,9 @@ import { RequestAccessPage } from "../pages/RequestAccessPage.tsx";
 import { SignupPage } from "../pages/SignupPage.tsx";
 import { AdminRoute } from "./AdminRoute.tsx";
 import { AccessHistoryPage } from "../pages/AccessHistoryPage.tsx";
+import { AdminDashboardPage } from "../pages/AdminDashboardPage.tsx";
+import { AdminEventsPage } from "../pages/AdminEventsPage.tsx";
+import { AdminEventInvestigationPage } from "../pages/AdminEventInvestigationPage.tsx";
 
 export function AppRoutes() {
   return (
@@ -59,7 +62,7 @@ export function AppRoutes() {
         path="/admin/overview"
         element={
           <AdminRoute>
-            <PlaceholderPage title="Security overview" />
+            <AdminDashboardPage />
           </AdminRoute>
         }
       />
@@ -67,7 +70,15 @@ export function AppRoutes() {
         path="/admin/events"
         element={
           <AdminRoute>
-            <PlaceholderPage title="Security events" />
+            <AdminEventsPage />
+          </AdminRoute>
+        }
+      />
+      <Route
+        path="/admin/events/:eventId"
+        element={
+          <AdminRoute>
+            <AdminEventInvestigationPage />
           </AdminRoute>
         }
       />

@@ -14,10 +14,13 @@ from app.db.models.profile import Profile
 from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.profile import ProfileRepository
 from app.schemas.access import AccessEvaluateRequest, AccessEvaluateResponse
+from app.schemas.admin import AdminEventInvestigation
 from app.schemas.history import AccessHistoryResponse
 from app.services.access_gateway import SecurityPipeline, access_gateway, get_security_pipeline
+from app.services.admin_queries import get_admin_event_investigation
 from app.services.context.location import GeoResolver, get_geo_resolver
 from app.services.protected_resource import get_protected_resource
+from app.services.security_events import record_event
 
 router = APIRouter(prefix="/access", tags=["access"])
 
@@ -49,13 +52,43 @@ async def read_access_history(
     ]
 
 
-@router.get("/request/{access_request_id}", response_model=AccessHistoryResponse)
+@router.get(
+    "/request/{access_request_id}",
+    response_model=AccessHistoryResponse | AdminEventInvestigation,
+)
 async def read_access_request(
     access_request_id: UUID,
+    request: Request,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> AccessHistoryResponse:
-    """Return the authenticated user's curated view of one access request."""
+) -> AccessHistoryResponse | AdminEventInvestigation:
+    """Return curated USER detail or the full investigation to an ADMIN."""
+    if principal.role == "ADMIN":
+        investigation = await get_admin_event_investigation(
+            session,
+            access_request_id=access_request_id,
+        )
+        if investigation is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Access request not found",
+            )
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", "")
+        record_event(
+            session,
+            event_type="ADMIN_ACCESS",
+            actor_id=principal.id,
+            decision="ALLOW",
+            risk_category="LOW",
+            details={
+                "path": route_path if isinstance(route_path, str) else "",
+                "method": request.method,
+            },
+        )
+        await session.commit()
+        return investigation
+
     record = await AccessRequestRepository(session).get_history_by_id_for_user(
         access_request_id,
         principal.id,

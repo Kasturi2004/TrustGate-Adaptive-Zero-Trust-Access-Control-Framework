@@ -30,8 +30,8 @@ describe("admin navigation visibility", () => {
     useAuthMock.mockReturnValue({ session: {}, user: { id: "user-1" }, loading: false });
     useProfileRoleMock.mockReturnValue({ role: "ADMIN", loading: false });
 
-    expect(textContent(Header())).toContain("Admin");
-    expect(textContent(HomePage())).toContain("Security overview");
+    expect(textContent(Header())).toContain("Admin dashboard");
+    expect(textContent(HomePage())).toContain("Admin dashboard");
     expect(textContent(HomePage())).toContain("Security events");
     expect(textContent(HomePage())).toContain("Quick access");
   });

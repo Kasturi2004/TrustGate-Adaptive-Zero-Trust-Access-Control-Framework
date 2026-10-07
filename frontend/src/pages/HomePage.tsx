@@ -25,7 +25,7 @@ export function HomePage() {
       ? [
           {
             to: "/admin/overview",
-            label: "Security overview",
+            label: "Admin dashboard",
             detail: "Open the administrator workspace.",
             marker: "05",
           },

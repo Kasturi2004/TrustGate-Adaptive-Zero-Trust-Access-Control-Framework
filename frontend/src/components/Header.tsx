@@ -82,7 +82,7 @@ export function Header({ open = false, onClose = () => undefined }: HeaderProps 
                   <span className="nav-marker" aria-hidden="true">
                     05
                   </span>
-                  Admin
+                  Admin dashboard
                 </NavLink>
               </li>
             )}
