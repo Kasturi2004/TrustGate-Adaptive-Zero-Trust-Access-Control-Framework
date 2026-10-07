@@ -484,6 +484,7 @@ def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, access_request, challenge = await _create_challenge_records(session)
+        access_request_id = access_request.id
         challenge_id = challenge.id
         challenge.expires_at = _NOW
         await session.flush()
@@ -510,7 +511,7 @@ def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
                 await session.scalars(
                     select(SecurityEvent).where(
                         SecurityEvent.event_type == "MFA_EXPIRED",
-                        SecurityEvent.access_request_id == access_request.id,
+                        SecurityEvent.access_request_id == access_request_id,
                     )
                 )
             ).all()
@@ -522,7 +523,7 @@ def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
             await session.scalar(
                 select(SecurityEvent.id).where(
                     SecurityEvent.event_type == "MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
-                    SecurityEvent.access_request_id == access_request.id,
+                    SecurityEvent.access_request_id == access_request_id,
                 )
             )
             is None

@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -25,13 +25,14 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from tests.integration.database import ScratchDatabase
+from tests.integration.database import ScratchDatabase, ensure_auth_user_profile
 
 _NOW = datetime(2026, 9, 29, 12, 0, tzinfo=UTC)
 _ORIGIN = "http://localhost:5173"
 _PASSWORD = "integration-password-must-not-be-stored"
 _KEY_SECRET = "integration-rate-limit-key-secret"
 _SECURITY_EVENT_TEST_SECRET = "integration-security-event-key-secret"
+_UPSTREAM_USER_ID = UUID("10000000-0000-4000-8000-000000000001")
 
 
 class _UpstreamClient:
@@ -64,6 +65,13 @@ def _configured_client(
     peer_ip: str,
     raise_server_exceptions: bool = True,
 ) -> tuple[TestClient, Any, list[dict[str, Any]], async_sessionmaker[AsyncSession]]:
+    asyncio.run(
+        ensure_auth_user_profile(
+            database.url,
+            user_id=_UPSTREAM_USER_ID,
+            email="login-rate-limit-actor@integration.test",
+        )
+    )
     engine = create_async_engine_for_url(database.url, null_pool=True)
     session_factory = create_session_factory(engine)
     upstream_calls: list[dict[str, Any]] = []

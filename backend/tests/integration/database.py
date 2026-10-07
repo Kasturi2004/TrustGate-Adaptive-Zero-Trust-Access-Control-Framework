@@ -7,6 +7,7 @@ import sys
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TypeVar
+from uuid import UUID
 
 from app.db.session import create_async_engine_for_url
 from sqlalchemy import text
@@ -18,6 +19,49 @@ _ALLOWED_TEST_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres"}
 _REQUIRED_TEST_DATABASE = "trustgate_test"
 T = TypeVar("T")
 SessionOperation = Callable[[AsyncSession], Awaitable[T]]
+
+
+async def ensure_auth_user_profile(
+    test_database_url: str,
+    *,
+    user_id: UUID,
+    email: str,
+) -> None:
+    """Provision a committed auth identity and matching profile for integration tests."""
+    engine = create_async_engine_for_url(test_database_url, null_pool=True)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO auth.users (id, email) VALUES (:id, :email) "
+                    "ON CONFLICT (id) DO NOTHING"
+                ),
+                {"id": user_id, "email": email},
+            )
+            await connection.execute(
+                text(
+                    "INSERT INTO public.profiles (id, email, role) "
+                    "VALUES (:id, :email, 'USER') ON CONFLICT (id) DO NOTHING"
+                ),
+                {"id": user_id, "email": email},
+            )
+    finally:
+        await engine.dispose()
+
+
+async def remove_auth_user_profile(test_database_url: str, *, user_id: UUID) -> None:
+    """Remove a test auth identity and its profile in FK-safe order."""
+    engine = create_async_engine_for_url(test_database_url, null_pool=True)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("DELETE FROM public.profiles WHERE id = :id"), {"id": user_id}
+            )
+            await connection.execute(
+                text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id}
+            )
+    finally:
+        await engine.dispose()
 
 
 class TestDatabaseConfigurationError(ValueError):

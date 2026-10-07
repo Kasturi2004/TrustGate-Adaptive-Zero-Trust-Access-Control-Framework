@@ -46,7 +46,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 from starlette.types import Scope
 
-from tests.integration.database import ScratchDatabase
+from tests.integration.database import (
+    ScratchDatabase,
+    ensure_auth_user_profile,
+    remove_auth_user_profile,
+)
 
 _NOW = datetime(2026, 9, 30, 12, 0, tzinfo=UTC)
 _RAW_DEVICE_TOKEN = "raw-device-token-must-never-persist"
@@ -97,12 +101,15 @@ def _context_request() -> Request:
     return Request(scope, receive)
 
 
-async def _create_prerequisites(session: AsyncSession) -> tuple[UUID, UUID]:
-    user_id = uuid4()
-    await session.execute(
-        text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
-        {"id": user_id, "email": f"gateway-{user_id}@integration.test"},
-    )
+async def _create_prerequisites(
+    session: AsyncSession, *, user_id: UUID | None = None
+) -> tuple[UUID, UUID]:
+    if user_id is None:
+        user_id = uuid4()
+        await session.execute(
+            text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
+            {"id": user_id, "email": f"gateway-{user_id}@integration.test"},
+        )
     policy_id = await session.scalar(
         select(PolicyVersion.id).where(PolicyVersion.version_label == "POL-1.0")
     )
@@ -357,6 +364,15 @@ def test_step_up_failsafe_commit_failure_rolls_back_request_and_events(
     migrated_test_database: ScratchDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    user_id = uuid4()
+    email = f"gateway-commit-failure-{user_id}@integration.test"
+    asyncio.run(
+        ensure_auth_user_profile(
+            migrated_test_database.url,
+            user_id=user_id,
+            email=email,
+        )
+    )
     original_commit = AsyncSession.commit
     commit_failed = False
 
@@ -370,7 +386,7 @@ def test_step_up_failsafe_commit_failure_rolls_back_request_and_events(
     monkeypatch.setattr(AsyncSession, "commit", fail_first_commit)
 
     async def exercise(session: AsyncSession) -> None:
-        user_id, policy_id = await _create_prerequisites(session)
+        _, policy_id = await _create_prerequisites(session, user_id=user_id)
         response = await access_gateway(
             session=session,
             principal=AuthenticatedPrincipal(user_id, None, "USER"),
@@ -389,24 +405,41 @@ def test_step_up_failsafe_commit_failure_rolls_back_request_and_events(
 
         assert commit_failed is True
         assert response.decision == "BLOCK"
-        assert await session.scalar(select(func.count()).select_from(AccessRequest)) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(AccessRequest)
+                .where(AccessRequest.user_id == user_id)
+            )
+            == 0
+        )
         assert (
             await session.scalar(
                 select(func.count())
                 .select_from(SecurityEvent)
                 .where(
                     SecurityEvent.event_type == "ACCESS_REQUEST_SUBMITTED",
+                    SecurityEvent.actor_id == user_id,
                 )
             )
             == 0
         )
-        events = list((await session.scalars(select(SecurityEvent))).all())
+        events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(SecurityEvent.actor_id == user_id)
+                )
+            ).all()
+        )
         assert len(events) == 1
         assert events[0].event_type == "PIPELINE_DEGRADED_FAILSAFE"
         assert events[0].actor_id == user_id
         assert events[0].decision == "BLOCK"
 
-    migrated_test_database.run_in_transaction(exercise)
+    try:
+        migrated_test_database.run_in_transaction(exercise)
+    finally:
+        asyncio.run(remove_auth_user_profile(migrated_test_database.url, user_id=user_id))
 
 
 @pytest.mark.parametrize(
@@ -607,7 +640,9 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             assert response.explanation == explain_decision("STEP_UP")
             assert str(rejected_policy_id) not in response.explanation
             assert "Trust result policy does not match" not in response.explanation
-            request = await session.scalar(select(AccessRequest))
+            request = await session.scalar(
+                select(AccessRequest).where(AccessRequest.user_id == user_id)
+            )
             assert request is not None
             assert request.initial_decision == "STEP_UP"
             assert request.mfa_required is True
@@ -844,30 +879,13 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
 ) -> None:
     user_id = uuid4()
     email = f"raw-token-rejection-{user_id}@integration.test"
-    engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
-
-    async def create_profile() -> None:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
-                {"id": user_id, "email": email},
-            )
-            await connection.execute(
-                text(
-                    "INSERT INTO public.profiles (id, email, role) "
-                    "VALUES (:id, :email, 'USER') ON CONFLICT (id) DO NOTHING"
-                ),
-                {"id": user_id, "email": email},
-            )
-
-    async def remove_profile() -> None:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text("DELETE FROM public.profiles WHERE id = :id"), {"id": user_id}
-            )
-            await connection.execute(text("DELETE FROM auth.users WHERE id = :id"), {"id": user_id})
-
-    asyncio.run(create_profile())
+    asyncio.run(
+        ensure_auth_user_profile(
+            migrated_test_database.url,
+            user_id=user_id,
+            email=email,
+        )
+    )
     try:
 
         async def exercise(session: AsyncSession) -> None:
@@ -902,7 +920,9 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             assert _RAW_DEVICE_TOKEN not in response.explanation
             assert raw_user_agent not in response.explanation
             assert "Pipeline result contains the raw device token" not in response.explanation
-            request = await session.scalar(select(AccessRequest))
+            request = await session.scalar(
+                select(AccessRequest).where(AccessRequest.user_id == user_id)
+            )
             assert request is not None
             assert request.initial_decision == "STEP_UP"
             assert request.mfa_required is True
@@ -967,7 +987,4 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
 
         migrated_test_database.run_in_transaction(exercise)
     finally:
-        try:
-            asyncio.run(remove_profile())
-        finally:
-            asyncio.run(engine.dispose())
+        asyncio.run(remove_auth_user_profile(migrated_test_database.url, user_id=user_id))
