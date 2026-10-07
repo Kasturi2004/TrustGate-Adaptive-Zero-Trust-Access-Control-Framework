@@ -1,3 +1,14 @@
+export interface AdminRiskIndicator {
+  count: number;
+  normalized_value: number;
+  flagged: boolean;
+}
+
+export interface AdminBehavioralRiskIndicators {
+  repeated_failed_access_attempts: AdminRiskIndicator;
+  recent_blocks: AdminRiskIndicator;
+}
+
 export interface AdminDashboard {
   total_requests: number;
   allow_count: number;
@@ -6,6 +17,7 @@ export interface AdminDashboard {
   average_trust_score: number | null;
   high_risk_count: number;
   mfa_success_rate: number | null;
+  behavioral_indicators: AdminBehavioralRiskIndicators;
 }
 
 export interface AdminSecurityEvent {
@@ -125,6 +137,7 @@ export interface AdminEventInvestigation {
   policy_decision: InvestigationPolicyDecision | null;
   otp_challenges: InvestigationOtpChallenge[];
   related_events: InvestigationEvent[];
+  behavioral_indicators: AdminBehavioralRiskIndicators | null;
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -178,6 +191,7 @@ export function parseAdminDashboard(value: unknown): AdminDashboard {
   ) {
     throw new Error("Admin dashboard response was not recognized");
   }
+  const behavioralIndicators = parseBehavioralRiskIndicators(data.behavioral_indicators);
   return {
     total_requests: data.total_requests as number,
     allow_count: data.allow_count as number,
@@ -186,6 +200,34 @@ export function parseAdminDashboard(value: unknown): AdminDashboard {
     average_trust_score: data.average_trust_score,
     high_risk_count: data.high_risk_count as number,
     mfa_success_rate: data.mfa_success_rate,
+    behavioral_indicators: behavioralIndicators,
+  };
+}
+
+function parseRiskIndicator(value: unknown): AdminRiskIndicator {
+  const data = record(value);
+  if (
+    !Number.isInteger(data.count) ||
+    (data.count as number) < 0 ||
+    !finiteNumber(data.normalized_value) ||
+    data.normalized_value < 0 ||
+    data.normalized_value > 1 ||
+    typeof data.flagged !== "boolean"
+  ) {
+    throw new Error("Behavioral risk indicator response was not recognized");
+  }
+  return {
+    count: data.count as number,
+    normalized_value: data.normalized_value,
+    flagged: data.flagged,
+  };
+}
+
+function parseBehavioralRiskIndicators(value: unknown): AdminBehavioralRiskIndicators {
+  const data = record(value);
+  return {
+    repeated_failed_access_attempts: parseRiskIndicator(data.repeated_failed_access_attempts),
+    recent_blocks: parseRiskIndicator(data.recent_blocks),
   };
 }
 
@@ -443,5 +485,9 @@ export function parseAdminInvestigation(value: unknown): AdminEventInvestigation
     policy_decision: policyDecision,
     otp_challenges: challenges,
     related_events: data.related_events.map(parseInvestigationEvent),
+    behavioral_indicators:
+      data.behavioral_indicators === null
+        ? null
+        : parseBehavioralRiskIndicators(data.behavioral_indicators),
   };
 }

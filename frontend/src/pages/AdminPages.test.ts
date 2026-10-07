@@ -81,6 +81,10 @@ import {
 import { AdminEventsPage } from "./AdminEventsPage.tsx";
 import { AdminDecision } from "../components/AdminDecision.tsx";
 import { AdminLoadingState } from "../components/AdminLoadingState.tsx";
+import {
+  BehavioralRiskIndicatorsView,
+  IndicatorCard,
+} from "../components/BehavioralRiskIndicators.tsx";
 
 const dashboard = {
   total_requests: 12,
@@ -90,6 +94,10 @@ const dashboard = {
   average_trust_score: 67.5,
   high_risk_count: 2,
   mfa_success_rate: 0.75,
+  behavioral_indicators: {
+    repeated_failed_access_attempts: { count: 4, normalized_value: 0.8, flagged: false },
+    recent_blocks: { count: 3, normalized_value: 1, flagged: true },
+  },
 };
 
 const eventPage = {
@@ -194,6 +202,10 @@ const investigation = {
       created_at: "2026-10-01T12:03:00Z",
     },
   ],
+  behavioral_indicators: {
+    repeated_failed_access_attempts: { count: 5, normalized_value: 1, flagged: true },
+    recent_blocks: { count: 2, normalized_value: 2 / 3, flagged: false },
+  },
 };
 
 interface UiNode {
@@ -218,7 +230,14 @@ function textContent(value: unknown): string[] {
   if (node.type === AdminDecision) {
     result.push(...textContent(AdminDecision(node.props as { decision: string | null })));
   } else if (
-    [AdminLoadingState, ChallengeHistory, EventFields, Field].includes(node.type as never)
+    [
+      AdminLoadingState,
+      BehavioralRiskIndicatorsView,
+      IndicatorCard,
+      ChallengeHistory,
+      EventFields,
+      Field,
+    ].includes(node.type as never)
   ) {
     const component = node.type as (props: never) => unknown;
     result.push(...textContent(component(node.props as never)));
@@ -282,6 +301,15 @@ describe("admin dashboard", () => {
     expect(text).toContain("75.0%");
     expect(text).toContain("Recent suspicious activity");
     expect(text).toContain("not included in the current dashboard API response");
+    expect(text).toContain("Repeated failed access attempts");
+    expect(text).toContain("Recent blocks");
+    expect(text).toContain("Current count 4");
+    expect(text).toMatch(/Normalized value 0\.80\s+\/ 1\.00/);
+    expect(text).toContain("Not flagged");
+    expect(text).toContain("Flagged");
+    expect(text).toContain("do not modify Trust Score or access decisions");
+    expect(text).toContain("Total requests");
+    expect(text).toContain("MFA success rate");
     expect(dashboardMock).toHaveBeenCalledWith(
       expect.stringMatching(/T00:00:00Z$/),
       expect.stringMatching(/T23:59:59\.999Z$/),
@@ -320,6 +348,21 @@ describe("admin dashboard", () => {
     expect(textContent(render(AdminDashboardPage)).join(" ")).toContain(
       "No access requests were recorded in this date range.",
     );
+  });
+
+  it("labels normalized indicator progress accessibly without adding keyboard traps", () => {
+    const card = IndicatorCard({
+      title: "Recent blocks",
+      description: "Access requests ending in BLOCK.",
+      indicator: { count: 2, normalized_value: 2 / 3, flagged: false },
+    });
+    const progress = findNode(card, (node) => node.type === "progress");
+    const article = findNode(card, (node) => node.type === "article");
+    expect(progress?.props["aria-label"]).toBe("Recent blocks normalized value");
+    expect(progress?.props.max).toBe(1);
+    expect(progress?.props.value).toBeCloseTo(2 / 3);
+    expect(article?.props["aria-labelledby"]).toBe("recent-blocks-indicator-title");
+    expect(findNode(card, (node) => node.props.tabIndex !== undefined)).toBeUndefined();
   });
 });
 
@@ -442,6 +485,10 @@ describe("admin event investigation", () => {
     expect(text).toContain("EXPIRED");
     expect(text).toContain("SUCCESS");
     expect(text).toContain("Attempts");
+    expect(text).toContain("Behavioral risk indicators");
+    expect(text).toContain("Current count 5");
+    expect(text).toMatch(/Normalized value 0\.67\s+\/ 1\.00/);
+    expect(text).toContain("Flagged");
     expect(text).not.toMatch(/otp_hash|DO_NOT_RENDER_HASH|secret value/i);
     expect(investigationMock).toHaveBeenCalledWith("event-1", expect.any(AbortSignal));
   });
@@ -455,6 +502,7 @@ describe("admin event investigation", () => {
       policy_decision: null,
       otp_challenges: [],
       related_events: [],
+      behavioral_indicators: null,
     });
     render(AdminEventInvestigationPage);
     await settle();
@@ -462,6 +510,7 @@ describe("admin event investigation", () => {
     const text = textContent(page).join(" ");
     expect(text).toContain("Event-only record");
     expect(text).toContain("not linked to an access request");
+    expect(text).toContain("Not applicable: this event is not linked to an access request");
     expect(text).not.toContain("Trust evaluation and factors");
     expect(text).not.toContain("No MFA challenge");
   });
@@ -483,5 +532,16 @@ describe("admin event investigation", () => {
     expect(text).toContain("No policy decision is available");
     expect(text).toContain("No MFA challenge was recorded");
     expect(text).toContain("No related events are available");
+  });
+
+  it("shows a generic error when investigation data cannot be loaded", async () => {
+    investigationMock.mockRejectedValue(new Error("private investigation payload"));
+    render(AdminEventInvestigationPage);
+    await settle();
+    const page = render(AdminEventInvestigationPage);
+    const text = textContent(page).join(" ");
+    expect(text).toContain("Investigation data is temporarily unavailable");
+    expect(text).not.toContain("private investigation payload");
+    expect(findNode(page, (node) => node.props.role === "alert")).toBeDefined();
   });
 });

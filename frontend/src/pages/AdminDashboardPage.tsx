@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchAdminDashboard } from "../api/admin.ts";
 import { AdminLoadingState } from "../components/AdminLoadingState.tsx";
+import { BehavioralRiskIndicatorsView } from "../components/BehavioralRiskIndicators.tsx";
 import type { AdminDashboard } from "../types/admin.ts";
 
 type LoadState =
@@ -155,6 +156,7 @@ export function AdminDashboardPage() {
         </section>
       ) : (
         <>
+          <BehavioralRiskIndicatorsView indicators={currentState.data.behavioral_indicators} />
           {currentState.status === "success" && currentState.data.total_requests === 0 && (
             <p className="admin-empty-note" role="status">
               No access requests were recorded in this date range.

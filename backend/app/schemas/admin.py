@@ -7,6 +7,25 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class AdminRiskIndicator(BaseModel):
+    """One normalized behavioral indicator computed from persisted records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    count: int = Field(ge=0)
+    normalized_value: float = Field(ge=0, le=1)
+    flagged: bool
+
+
+class AdminBehavioralRiskIndicators(BaseModel):
+    """Allow-listed Phase 13 indicators for an administrative read."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repeated_failed_access_attempts: AdminRiskIndicator
+    recent_blocks: AdminRiskIndicator
+
+
 class AdminDashboardResponse(BaseModel):
     """Aggregate dashboard metrics without ORM or credential fields."""
 
@@ -19,6 +38,7 @@ class AdminDashboardResponse(BaseModel):
     average_trust_score: float | None
     high_risk_count: int
     mfa_success_rate: float | None
+    behavioral_indicators: AdminBehavioralRiskIndicators
 
 
 class AdminSecurityEventItem(BaseModel):
@@ -173,3 +193,4 @@ class AdminEventInvestigation(BaseModel):
     policy_decision: AdminInvestigationPolicyDecision | None
     otp_challenges: list[AdminInvestigationOtpChallenge]
     related_events: list[AdminInvestigationEvent]
+    behavioral_indicators: AdminBehavioralRiskIndicators | None = None

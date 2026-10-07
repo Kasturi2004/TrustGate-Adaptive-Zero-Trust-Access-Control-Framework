@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clock import Clock
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
@@ -22,6 +23,7 @@ from app.db.repositories.security_event import SecurityEventRepository
 from app.db.repositories.trust_evaluation import TrustEvaluationRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
 from app.schemas.admin import (
+    AdminBehavioralRiskIndicators,
     AdminEventInvestigation,
     AdminInvestigationContext,
     AdminInvestigationDevice,
@@ -33,6 +35,7 @@ from app.schemas.admin import (
     AdminInvestigationRequest,
     AdminInvestigationTrustEvaluation,
 )
+from app.services.behavioral_risk import get_behavioral_risk_indicators
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +239,8 @@ async def get_admin_event_investigation(
     *,
     event_id: UUID | None = None,
     access_request_id: UUID | None = None,
+    clock: Clock,
+    block_indicator_limit: int,
 ) -> AdminEventInvestigation | None:
     """Return an allow-listed persisted investigation by event or request ID.
 
@@ -264,10 +269,17 @@ async def get_admin_event_investigation(
     policy_response: AdminInvestigationPolicyDecision | None = None
     otp_responses: list[AdminInvestigationOtpChallenge] = []
     related_responses: list[AdminInvestigationEvent] = []
+    behavioral_indicators: AdminBehavioralRiskIndicators | None = None
 
     if access_request_id is not None:
         access_request = await session.get(AccessRequest, access_request_id)
         if access_request is not None:
+            behavioral_indicators = await get_behavioral_risk_indicators(
+                session,
+                clock=clock,
+                block_indicator_limit=block_indicator_limit,
+                user_id=access_request.user_id,
+            )
             device = await session.get(Device, access_request.device_id)
             request_response = AdminInvestigationRequest(
                 id=access_request.id,
@@ -381,6 +393,7 @@ async def get_admin_event_investigation(
         policy_decision=policy_response,
         otp_challenges=otp_responses,
         related_events=related_responses,
+        behavioral_indicators=behavioral_indicators,
     )
 
 

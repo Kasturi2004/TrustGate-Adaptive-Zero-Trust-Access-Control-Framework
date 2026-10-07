@@ -12,7 +12,9 @@ import app.api.deps as deps
 import app.core.jwt as jwt_module
 import jwt
 import pytest
-from app.core.config import Settings
+from app.api.deps import get_clock
+from app.core.clock import FixedClock
+from app.core.config import Settings, get_settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
@@ -29,7 +31,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from jwt import PyJWKClient
 from jwt.algorithms import ECAlgorithm
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.integration.database import ScratchDatabase, ensure_auth_user_profile
@@ -66,6 +68,7 @@ class SeededInvestigation:
     event_only_id: UUID
     related_event_ids: tuple[UUID, ...]
     challenge_ids: tuple[UUID, ...]
+    indicator_block_request_ids: tuple[UUID, ...]
 
 
 async def _seed_investigation(database_url: str) -> SeededInvestigation:
@@ -239,6 +242,27 @@ async def _seed_investigation(database_url: str) -> SeededInvestigation:
                 created_at=_NOW + timedelta(minutes=1),
             )
             session.add_all((root_event, *related_events, event_only))
+            indicator_block_requests = [
+                AccessRequest(
+                    user_id=user_id,
+                    device_id=device.id,
+                    source_ip=IPv4Address("203.0.113.45"),
+                    initial_decision="BLOCK",
+                    final_outcome="BLOCK",
+                    requested_at=_NOW - timedelta(minutes=index + 1),
+                    resolved_at=_NOW - timedelta(minutes=index + 1),
+                )
+                for index in range(3)
+            ]
+            session.add_all(indicator_block_requests)
+            session.add_all(
+                SecurityEvent(
+                    event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                    actor_id=user_id,
+                    created_at=_NOW,
+                )
+                for _ in range(5)
+            )
             await session.flush()
 
             return SeededInvestigation(
@@ -249,6 +273,9 @@ async def _seed_investigation(database_url: str) -> SeededInvestigation:
                 event_only_id=event_only.id,
                 related_event_ids=tuple(event.id for event in related_events),
                 challenge_ids=(first_challenge.id, success_challenge.id),
+                indicator_block_request_ids=tuple(
+                    request.id for request in indicator_block_requests
+                ),
             )
     finally:
         await engine.dispose()
@@ -259,7 +286,22 @@ def seeded_investigation(
     migrated_test_database: ScratchDatabase,
 ) -> Iterator[SeededInvestigation]:
     # Rows remain in the disposable database because security events are append-only.
-    yield asyncio.run(_seed_investigation(migrated_test_database.url))
+    seeded = asyncio.run(_seed_investigation(migrated_test_database.url))
+    yield seeded
+
+    async def remove_indicator_blocks() -> None:
+        engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    delete(AccessRequest).where(
+                        AccessRequest.id.in_(seeded.indicator_block_request_ids)
+                    )
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(remove_indicator_blocks())
 
 
 def _client(database_url: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -277,7 +319,10 @@ def _client(database_url: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
     monkeypatch.setattr(PyJWKClient, "fetch_data", lambda _client: {"keys": [public_jwk]})
     jwt_module._jwks_client.cache_clear()
-    return TestClient(create_app(settings))
+    application = create_app(settings)
+    application.dependency_overrides[get_settings] = lambda: settings
+    application.dependency_overrides[get_clock] = lambda: FixedClock(_NOW)
+    return TestClient(application)
 
 
 def _token(user_id: UUID, *, role_claim: str) -> str:
@@ -333,6 +378,7 @@ def test_admin_investigation_returns_the_full_persisted_chain_and_audits_read(
         "policy_decision",
         "otp_challenges",
         "related_events",
+        "behavioral_indicators",
     }
     assert set(body["event"]) == {
         "id",
@@ -349,6 +395,14 @@ def test_admin_investigation_returns_the_full_persisted_chain_and_audits_read(
     assert body["access_request"]["final_outcome"] == "ALLOW"
     assert body["access_request"]["source_ip"] == "203.0.113.45"
     assert body["access_request"]["resolved_region"] == "Example Region"
+    assert body["behavioral_indicators"] == {
+        "repeated_failed_access_attempts": {
+            "count": 8,
+            "normalized_value": 1.0,
+            "flagged": True,
+        },
+        "recent_blocks": {"count": 3, "normalized_value": 1.0, "flagged": True},
+    }
     assert body["access_request"]["device"]["device_hash"] == _DEVICE_HASH[:12] + "…"
 
     assert set(body["context_signals"]) == {
@@ -441,6 +495,7 @@ def test_event_without_access_request_returns_event_only_investigation(
     assert body["policy_decision"] is None
     assert body["otp_challenges"] == []
     assert body["related_events"] == []
+    assert body["behavioral_indicators"] is None
     _assert_no_sensitive_content(body)
 
 
@@ -468,6 +523,10 @@ def test_admin_request_detail_uses_full_investigation_and_user_stays_curated(
     admin_body = admin_response.json()
     assert admin_body["access_request"]["id"] == str(seeded_investigation.access_request_id)
     assert len(admin_body["otp_challenges"]) == 2
+    assert admin_body["behavioral_indicators"]["repeated_failed_access_attempts"]["count"] == 8
+    assert admin_body["behavioral_indicators"]["repeated_failed_access_attempts"]["flagged"] is True
+    assert admin_body["behavioral_indicators"]["recent_blocks"]["count"] == 3
+    assert admin_body["behavioral_indicators"]["recent_blocks"]["flagged"] is True
     _assert_no_sensitive_content(admin_body)
 
     assert user_response.status_code == 200

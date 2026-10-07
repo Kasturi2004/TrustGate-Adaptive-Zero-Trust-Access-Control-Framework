@@ -14,6 +14,10 @@ const dashboard = {
   average_trust_score: 67.5,
   high_risk_count: 2,
   mfa_success_rate: 0.75,
+  behavioral_indicators: {
+    repeated_failed_access_attempts: { count: 4, normalized_value: 0.8, flagged: false },
+    recent_blocks: { count: 3, normalized_value: 1, flagged: true },
+  },
 };
 
 afterEach(() => vi.clearAllMocks());
@@ -28,6 +32,25 @@ describe("admin API", () => {
       "/admin/dashboard?from=2026-10-01T00%3A00%3A00Z&to=2026-10-07T23%3A59%3A59Z",
       { signal: undefined },
     );
+  });
+
+  it("projects indicator data to the defined fields", async () => {
+    const response = {
+      ...dashboard,
+      behavioral_indicators: {
+        repeated_failed_access_attempts: {
+          count: 4,
+          normalized_value: 0.8,
+          flagged: false,
+          internal_note: "must not render",
+        },
+        recent_blocks: { count: 3, normalized_value: 1, flagged: true },
+      },
+    };
+    apiRequestMock.mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    const parsed = await fetchAdminDashboard("from", "to");
+    expect(parsed.behavioral_indicators).toEqual(dashboard.behavioral_indicators);
+    expect(JSON.stringify(parsed)).not.toContain("internal_note");
   });
 
   it("sends all active event filters and pagination to the backend", async () => {
@@ -70,10 +93,34 @@ describe("admin API", () => {
       policy_decision: null,
       otp_challenges: [],
       related_events: [],
+      behavioral_indicators: null,
     };
     apiRequestMock.mockResolvedValue(new Response(JSON.stringify(detail), { status: 200 }));
     await expect(fetchAdminEventInvestigation("event/one")).resolves.toEqual(detail);
     expect(apiRequestMock).toHaveBeenCalledWith("/admin/events/event%2Fone", {
+      signal: undefined,
+    });
+  });
+
+  it("parses the two investigation indicators from the existing response", async () => {
+    const response = {
+      event: null,
+      access_request: null,
+      context_signals: null,
+      trust_evaluation: null,
+      policy_decision: null,
+      otp_challenges: [],
+      related_events: [],
+      behavioral_indicators: {
+        repeated_failed_access_attempts: { count: 5, normalized_value: 1, flagged: true },
+        recent_blocks: { count: 1, normalized_value: 1 / 3, flagged: false },
+      },
+    };
+    apiRequestMock.mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    await expect(fetchAdminEventInvestigation("event-1")).resolves.toMatchObject({
+      behavioral_indicators: response.behavioral_indicators,
+    });
+    expect(apiRequestMock).toHaveBeenCalledWith("/admin/events/event-1", {
       signal: undefined,
     });
   });

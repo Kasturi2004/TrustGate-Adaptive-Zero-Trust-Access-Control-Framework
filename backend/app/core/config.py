@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     trusted_proxies: str | None = None
     geoip_db_path: str | None = None
     treat_localhost_as_secure: bool | None = None
-    block_indicator_limit: int | None = None
+    block_indicator_limit: int = Field(default=3, ge=1)
 
     @field_validator(
         "supabase_url",

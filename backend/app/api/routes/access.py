@@ -61,12 +61,16 @@ async def read_access_request(
     request: Request,
     principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AccessHistoryResponse | AdminEventInvestigation:
     """Return curated USER detail or the full investigation to an ADMIN."""
     if principal.role == "ADMIN":
         investigation = await get_admin_event_investigation(
             session,
             access_request_id=access_request_id,
+            clock=clock,
+            block_indicator_limit=settings.block_indicator_limit,
         )
         if investigation is None:
             raise HTTPException(

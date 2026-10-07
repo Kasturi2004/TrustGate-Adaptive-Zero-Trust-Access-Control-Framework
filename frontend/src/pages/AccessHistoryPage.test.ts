@@ -149,6 +149,9 @@ describe("AccessHistoryPage", () => {
     expect(textContent(page)).not.toMatch(
       /trust score|factor|weight|threshold|policy version|decision reason|fingerprint|IP address|location|OTP/i,
     );
+    expect(textContent(page)).not.toMatch(
+      /behavioral risk indicators|repeated failed access attempts|recent blocks/i,
+    );
     expect(findNode(page, (node) => node.props.to === `/history/${row.id}`)).toBeDefined();
     expect(historyMock).toHaveBeenCalledWith(1, 10, expect.any(AbortSignal));
   });

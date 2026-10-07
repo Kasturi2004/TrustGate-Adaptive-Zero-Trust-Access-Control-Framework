@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { fetchAdminEventInvestigation } from "../api/admin.ts";
 import { AdminDecision } from "../components/AdminDecision.tsx";
 import { AdminLoadingState } from "../components/AdminLoadingState.tsx";
+import { BehavioralRiskIndicatorsView } from "../components/BehavioralRiskIndicators.tsx";
 import type {
   AdminEventInvestigation,
   InvestigationEvent,
@@ -127,6 +128,19 @@ export function AdminEventInvestigationPage() {
         </section>
       ) : (
         <>
+          {currentState.data.behavioral_indicators ? (
+            <BehavioralRiskIndicatorsView indicators={currentState.data.behavioral_indicators} />
+          ) : (
+            <section
+              className="panel admin-investigation-section"
+              aria-labelledby="behavioral-risk-unavailable-title"
+            >
+              <h2 id="behavioral-risk-unavailable-title">Behavioral risk indicators</h2>
+              <p className="admin-optional-empty">
+                Not applicable: this event is not linked to an access request.
+              </p>
+            </section>
+          )}
           {currentState.data.event ? (
             <ol className="admin-investigation-chain" aria-label="Investigation chain">
               <li>

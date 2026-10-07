@@ -8,7 +8,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedPrincipal, get_db_session, require_role
+from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_role
+from app.core.clock import Clock
+from app.core.config import Settings, get_settings
 from app.schemas.admin import (
     AdminDashboardResponse,
     AdminEventInvestigation,
@@ -20,6 +22,7 @@ from app.services.admin_queries import (
     get_admin_security_events,
     get_dashboard_metrics,
 )
+from app.services.behavioral_risk import get_behavioral_risk_indicators
 from app.services.security_events import record_event
 
 _require_admin = require_role("ADMIN")
@@ -45,6 +48,8 @@ async def read_admin_dashboard(
     request: Request,
     current_user: Annotated[AuthenticatedPrincipal, Depends(_require_admin)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    settings: Annotated[Settings, Depends(get_settings)],
     from_: Annotated[datetime, Query(alias="from")],
     to_: Annotated[datetime, Query(alias="to")],
 ) -> AdminDashboardResponse:
@@ -58,6 +63,11 @@ async def read_admin_dashboard(
         )
 
     metrics = await get_dashboard_metrics(session, from_utc=from_utc, to_utc=to_utc)
+    behavioral_indicators = await get_behavioral_risk_indicators(
+        session,
+        clock=clock,
+        block_indicator_limit=settings.block_indicator_limit,
+    )
     route = request.scope.get("route")
     route_path = getattr(route, "path", "")
     record_event(
@@ -81,6 +91,7 @@ async def read_admin_dashboard(
         average_trust_score=metrics.average_trust_score,
         high_risk_count=metrics.high_risk_count,
         mfa_success_rate=metrics.mfa_success_rate,
+        behavioral_indicators=behavioral_indicators,
     )
 
 
@@ -164,9 +175,16 @@ async def read_admin_event_investigation(
     request: Request,
     current_user: Annotated[AuthenticatedPrincipal, Depends(_require_admin)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+    settings: Annotated[Settings, Depends(get_settings)],
 ) -> AdminEventInvestigation:
     """Return one event and its persisted causal chain for an administrator."""
-    investigation = await get_admin_event_investigation(session, event_id=event_id)
+    investigation = await get_admin_event_investigation(
+        session,
+        event_id=event_id,
+        clock=clock,
+        block_indicator_limit=settings.block_indicator_limit,
+    )
     if investigation is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

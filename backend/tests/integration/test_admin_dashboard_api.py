@@ -12,7 +12,9 @@ import app.api.deps as deps
 import app.core.jwt as jwt_module
 import jwt
 import pytest
-from app.core.config import Settings
+from app.api.deps import get_clock
+from app.core.clock import Clock, FixedClock
+from app.core.config import Settings, get_settings
 from app.db.models.access_request import AccessRequest
 from app.db.models.device import Device
 from app.db.models.otp_challenge import OtpChallenge
@@ -37,6 +39,7 @@ from tests.integration.database import (
 _SUPABASE_URL = "https://admin-dashboard-test.supabase.co"
 _TEST_PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
 _TEST_KID = "admin-dashboard-test-key"
+_DEFAULT_INDICATOR_TIME = datetime(2040, 1, 1, tzinfo=UTC)
 _FROM = datetime(2026, 1, 10, tzinfo=UTC)
 _TO = datetime(2026, 1, 13, tzinfo=UTC)
 _ALLOWED_FIELDS = {
@@ -47,6 +50,7 @@ _ALLOWED_FIELDS = {
     "average_trust_score",
     "high_risk_count",
     "mfa_success_rate",
+    "behavioral_indicators",
 }
 _FORBIDDEN_KEYS = {
     "otp_hash",
@@ -256,6 +260,39 @@ async def _seed_dashboard(database_url: str) -> SeededDashboard:
         await engine.dispose()
 
 
+async def _seed_indicator_activity(
+    database_url: str,
+    *,
+    seeded: SeededDashboard,
+    now: datetime,
+) -> UUID:
+    engine = create_async_engine_for_url(database_url, null_pool=True)
+    try:
+        async with AsyncSession(engine) as session, session.begin():
+            blocked_request = AccessRequest(
+                user_id=seeded.user_id,
+                device_id=seeded.device_id,
+                source_ip=IPv4Address("192.0.2.11"),
+                initial_decision="BLOCK",
+                final_outcome="BLOCK",
+                requested_at=now,
+                resolved_at=now,
+            )
+            session.add(blocked_request)
+            session.add_all(
+                SecurityEvent(
+                    event_type="MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+                    actor_id=seeded.user_id,
+                    created_at=now,
+                )
+                for _ in range(4)
+            )
+            await session.flush()
+            return blocked_request.id
+    finally:
+        await engine.dispose()
+
+
 async def _remove_dashboard(database_url: str, seeded: SeededDashboard) -> None:
     engine = create_async_engine_for_url(database_url, null_pool=True)
     try:
@@ -290,7 +327,12 @@ def seeded_dashboard(migrated_test_database: ScratchDatabase) -> Iterator[Seeded
     asyncio.run(_remove_dashboard(migrated_test_database.url, seeded))
 
 
-def _client(database_url: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
+def _client(
+    database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    clock: Clock | None = None,
+) -> TestClient:
     settings = Settings(
         app_env="test",
         cors_allowed_origin="http://localhost:5173",
@@ -306,7 +348,12 @@ def _client(database_url: str, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
     monkeypatch.setattr(PyJWKClient, "fetch_data", lambda _client: {"keys": [public_jwk]})
     jwt_module._jwks_client.cache_clear()
-    return TestClient(create_app(settings))
+    application = create_app(settings)
+    application.dependency_overrides[get_settings] = lambda: settings
+    application.dependency_overrides[get_clock] = lambda: (
+        clock or FixedClock(_DEFAULT_INDICATOR_TIME)
+    )
+    return TestClient(application)
 
 
 def _token(user_id: UUID, *, role_claim: str) -> str:
@@ -372,6 +419,14 @@ def test_admin_dashboard_returns_real_metrics_and_audits_the_read(
         "average_trust_score": 70.0,
         "high_risk_count": 1,
         "mfa_success_rate": None,
+        "behavioral_indicators": {
+            "repeated_failed_access_attempts": {
+                "count": 0,
+                "normalized_value": 0.0,
+                "flagged": False,
+            },
+            "recent_blocks": {"count": 0, "normalized_value": 0.0, "flagged": False},
+        },
     }
     assert body["mfa_success_rate"] == pytest.approx(2 / 3)
     _assert_no_sensitive_fields(body)
@@ -402,6 +457,69 @@ def test_admin_dashboard_returns_real_metrics_and_audits_the_read(
     asyncio.run(assert_audit_event())
 
 
+def test_admin_dashboard_surfaces_both_behavioral_indicators(
+    migrated_test_database: ScratchDatabase,
+    seeded_dashboard: SeededDashboard,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Spread synthetic timestamps so append-only test events from other runs cannot overlap.
+    now = datetime(2200, 1, 1, tzinfo=UTC) + timedelta(
+        seconds=uuid4().int % (365 * 24 * 60 * 60 * 1000)
+    )
+    blocked_request_id = asyncio.run(
+        _seed_indicator_activity(
+            migrated_test_database.url,
+            seeded=seeded_dashboard,
+            now=now,
+        )
+    )
+    try:
+        with _client(
+            migrated_test_database.url,
+            monkeypatch,
+            clock=FixedClock(now),
+        ) as client:
+            response = client.get(
+                "/admin/dashboard",
+                params=_dashboard_params(),
+                headers={
+                    "Authorization": "Bearer "
+                    + _token(seeded_dashboard.admin_id, role_claim="ADMIN")
+                },
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["behavioral_indicators"] == {
+            "repeated_failed_access_attempts": {
+                "count": 5,
+                "normalized_value": 1.0,
+                "flagged": True,
+            },
+            "recent_blocks": {
+                "count": 1,
+                "normalized_value": pytest.approx(1 / 3),
+                "flagged": False,
+            },
+        }
+        assert body["total_requests"] == 4
+        assert body["average_trust_score"] == 70.0
+        _assert_no_sensitive_fields(body)
+    finally:
+
+        async def remove_blocked_request() -> None:
+            engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+            try:
+                async with engine.begin() as connection:
+                    await connection.execute(
+                        delete(AccessRequest).where(AccessRequest.id == blocked_request_id)
+                    )
+            finally:
+                await engine.dispose()
+
+        asyncio.run(remove_blocked_request())
+
+
 def test_admin_dashboard_has_null_metrics_when_no_evaluations_or_challenges_exist(
     migrated_test_database: ScratchDatabase,
     seeded_dashboard: SeededDashboard,
@@ -428,6 +546,14 @@ def test_admin_dashboard_has_null_metrics_when_no_evaluations_or_challenges_exis
         "average_trust_score": None,
         "high_risk_count": 0,
         "mfa_success_rate": None,
+        "behavioral_indicators": {
+            "repeated_failed_access_attempts": {
+                "count": 0,
+                "normalized_value": 0.0,
+                "flagged": False,
+            },
+            "recent_blocks": {"count": 0, "normalized_value": 0.0, "flagged": False},
+        },
     }
 
 
