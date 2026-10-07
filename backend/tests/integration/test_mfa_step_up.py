@@ -484,6 +484,7 @@ def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, access_request, challenge = await _create_challenge_records(session)
+        challenge_id = challenge.id
         challenge.expires_at = _NOW
         await session.flush()
 
@@ -491,7 +492,7 @@ def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
             with pytest.raises(HTTPException) as error:
                 await mfa_routes.verify_totp_step_up(
                     request=TotpStepUpVerificationRequest(
-                        mfa_challenge_id=challenge.id,
+                        mfa_challenge_id=challenge_id,
                         code=pyotp.TOTP(_SECRET).at(_NOW),
                     ),
                     http_request=_request(),

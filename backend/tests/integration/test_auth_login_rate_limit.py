@@ -47,7 +47,14 @@ class _UpstreamClient:
     async def post(self, *_: Any, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
         request = httpx.Request("POST", "https://project.example.test/auth/v1/token")
-        return httpx.Response(200, content=b'{"access_token":"integration-token"}', request=request)
+        return httpx.Response(
+            200,
+            content=(
+                b'{"access_token":"integration-token",'
+                b'"user":{"id":"10000000-0000-4000-8000-000000000001"}}'
+            ),
+            request=request,
+        )
 
 
 def _configured_client(

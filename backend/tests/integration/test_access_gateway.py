@@ -32,7 +32,6 @@ from app.services.access_gateway import (
     DeviceResult,
     PipelineResult,
     TrustFactorResult,
-    _persist_step_up_failsafe,
     access_gateway,
     get_security_pipeline,
 )
@@ -358,32 +357,54 @@ def test_step_up_failsafe_commit_failure_rolls_back_request_and_events(
     migrated_test_database: ScratchDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fail_commit(_session: AsyncSession) -> None:
-        raise RuntimeError("private commit failure")
+    original_commit = AsyncSession.commit
+    commit_failed = False
 
-    monkeypatch.setattr(AsyncSession, "commit", fail_commit)
+    async def fail_first_commit(session: AsyncSession) -> None:
+        nonlocal commit_failed
+        if not commit_failed:
+            commit_failed = True
+            raise RuntimeError("private commit failure")
+        await original_commit(session)
+
+    monkeypatch.setattr(AsyncSession, "commit", fail_first_commit)
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
-        with pytest.raises(RuntimeError, match="private commit failure"):
-            await _persist_step_up_failsafe(
-                session,
-                actor_id=user_id,
-                resource=get_protected_resource("ops-dashboard"),
-                device_token=_RAW_DEVICE_TOKEN,
-                client_ip="192.0.2.18",
-                policy_version_id=policy_id,
-                stepup_score=Decimal("45"),
-                now=_NOW,
-                settings=Settings(
-                    app_env="test",
-                    cors_allowed_origin="http://localhost:5173",
-                    device_hash_secret=_GATEWAY_DEVICE_SECRET,
-                ),
-            )
+        response = await access_gateway(
+            session=session,
+            principal=AuthenticatedPrincipal(user_id, None, "USER"),
+            resource=get_protected_resource("ops-dashboard"),
+            device_token=_RAW_DEVICE_TOKEN,
+            client_ip="192.0.2.18",
+            user_agent="test",
+            pipeline=CompleteTestPipeline(_complete_result(uuid4(), "ALLOW")),
+            clock=FixedClock(_NOW),
+            settings=Settings(
+                app_env="test",
+                cors_allowed_origin="http://localhost:5173",
+                device_hash_secret=_GATEWAY_DEVICE_SECRET,
+            ),
+        )
 
-        for model in (AccessRequest, SecurityEvent):
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+        assert commit_failed is True
+        assert response.decision == "BLOCK"
+        assert await session.scalar(select(func.count()).select_from(AccessRequest)) == 0
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(SecurityEvent)
+                .where(
+                    SecurityEvent.event_type == "ACCESS_REQUEST_SUBMITTED",
+                )
+            )
+            == 0
+        )
+        events = list((await session.scalars(select(SecurityEvent))).all())
+        assert len(events) == 1
+        assert events[0].event_type == "PIPELINE_DEGRADED_FAILSAFE"
+        assert events[0].actor_id == user_id
+        assert events[0].decision == "BLOCK"
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -615,7 +636,12 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             assert expected_hash is not None
             assert device.device_hash == expected_hash
             assert device.device_hash != _RAW_DEVICE_TOKEN
-            event = await session.scalar(select(SecurityEvent))
+            event = await session.scalar(
+                select(SecurityEvent).where(
+                    SecurityEvent.event_type == "PIPELINE_DEGRADED_FAILSAFE",
+                    SecurityEvent.access_request_id == request.id,
+                )
+            )
             assert event is not None
             assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
             assert event.actor_id == user_id
@@ -826,6 +852,13 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
                 text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
                 {"id": user_id, "email": email},
             )
+            await connection.execute(
+                text(
+                    "INSERT INTO public.profiles (id, email, role) "
+                    "VALUES (:id, :email, 'USER') ON CONFLICT (id) DO NOTHING"
+                ),
+                {"id": user_id, "email": email},
+            )
 
     async def remove_profile() -> None:
         async with engine.begin() as connection:
@@ -903,7 +936,12 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             assert raw_user_agent not in repr(device)
             profile = await session.get(Profile, user_id)
             assert profile is not None
-            event = await session.scalar(select(SecurityEvent))
+            event = await session.scalar(
+                select(SecurityEvent).where(
+                    SecurityEvent.event_type == "PIPELINE_DEGRADED_FAILSAFE",
+                    SecurityEvent.access_request_id == request.id,
+                )
+            )
             assert event is not None
             assert event.event_type == "PIPELINE_DEGRADED_FAILSAFE"
             assert event.actor_id == profile.id == user_id
