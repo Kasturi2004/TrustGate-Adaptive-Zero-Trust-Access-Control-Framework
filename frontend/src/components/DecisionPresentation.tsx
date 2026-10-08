@@ -17,21 +17,22 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const decisionContent = {
   ALLOW: {
     title: "Access granted",
-    description: "Your request was approved.",
+    description: "Access to Operations Dashboard was granted immediately.",
     label: "ALLOW",
     tone: "allow",
     icon: "✓",
   },
   STEP_UP: {
     title: "Additional verification required",
-    description: "Additional verification is required to continue.",
+    description: "Verify with your Authenticator app before access can be granted.",
     label: "STEP-UP",
     tone: "step",
     icon: "···",
   },
   BLOCK: {
     title: "Access denied",
-    description: "Access is not approved.",
+    description:
+      "Access to Operations Dashboard was denied based on the current security assessment.",
     label: "BLOCK",
     tone: "block",
     icon: "×",
@@ -66,7 +67,7 @@ export function DecisionPresentation({
           </span>
           <span className="decision-badge">
             <span className="decision-dot" aria-hidden="true" />
-            MFA VERIFIED
+            AUTHENTICATOR VERIFIED
           </span>
           <h2 id="decision-title">Access Granted</h2>
           <p>Your authenticator was verified and access has been approved.</p>
@@ -96,13 +97,6 @@ export function DecisionPresentation({
         </span>
         <h2 id="decision-title">{content.title}</h2>
         <p>{content.description}</p>
-      </div>
-
-      <div className="decision-explanation">
-        <div>
-          <h3>Why this happened</h3>
-          <p>{evaluation.explanation}</p>
-        </div>
       </div>
 
       <div className="decision-actions">

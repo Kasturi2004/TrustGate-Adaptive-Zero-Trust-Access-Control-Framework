@@ -98,8 +98,11 @@ export function AccountPage() {
       <header className="page-heading">
         <div>
           <span className="page-eyebrow">Account security</span>
-          <h1>Authenticator setup</h1>
-          <p>Connect an authenticator app to complete additional verification when required.</p>
+          <h1>Authenticator</h1>
+          <p>
+            Set up and manage the authenticator used when TrustGate requires additional
+            verification.
+          </p>
         </div>
       </header>
 
@@ -111,7 +114,8 @@ export function AccountPage() {
           <span className="page-eyebrow">Setup complete</span>
           <h2 id="enrollment-success-title">Authenticator enrolled successfully.</h2>
           <p>
-            Your authenticator can now be used when an access request requires STEP-UP verification.
+            Your authenticator can now be used when an access request requires additional
+            verification.
           </p>
           <Link className="login-submit auth-submit account-primary-action" to="/access">
             Go to access requests
@@ -125,8 +129,8 @@ export function AccountPage() {
           <span className="page-eyebrow">Two-step setup</span>
           <h2 id="enrollment-start-title">Add an authenticator</h2>
           <p>
-            Use an authenticator app that supports time-based one-time passwords (TOTP). Setup takes
-            a moment and is confirmed with a six-digit code.
+            Use an authenticator app to add this account. Setup takes a moment and is confirmed with
+            a six-digit code.
           </p>
           {error && (
             <p className="login-error" role="alert">
@@ -172,8 +176,7 @@ export function AccountPage() {
             {enrollment?.manual_entry_key}
           </code>
           <p className="account-setup-note">
-            The provisioning URI is held only in this page's memory. No QR library is installed, so
-            use the manual key above.
+            No QR image is shown. Use the manual setup key above to connect your authenticator app.
           </p>
 
           <form className="account-verify-form" onSubmit={(event) => void submitCode(event)}>

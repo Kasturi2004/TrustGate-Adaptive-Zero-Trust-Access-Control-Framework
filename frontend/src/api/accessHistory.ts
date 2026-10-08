@@ -4,6 +4,11 @@ import {
   parseAccessHistoryResponse,
   type AccessHistoryEntry,
 } from "../types/accessHistory.ts";
+import { parseAdminInvestigation, type AdminEventInvestigation } from "../types/admin.ts";
+
+export type AccessRequestDetail =
+  | { kind: "user"; record: AccessHistoryEntry }
+  | { kind: "admin"; investigation: AdminEventInvestigation };
 
 export async function fetchAccessHistory(
   page: number,
@@ -21,12 +26,17 @@ export async function fetchAccessHistory(
 export async function fetchAccessRequest(
   accessRequestId: string,
   signal?: AbortSignal,
-): Promise<AccessHistoryEntry> {
+): Promise<AccessRequestDetail> {
   const response = await apiRequest(`/access/request/${encodeURIComponent(accessRequestId)}`, {
     signal,
   });
   if (!response.ok) {
     throw new Error("Access request detail failed");
   }
-  return parseAccessHistoryEntry(await response.json());
+  const body: unknown = await response.json();
+  try {
+    return { kind: "user", record: parseAccessHistoryEntry(body) };
+  } catch {
+    return { kind: "admin", investigation: parseAdminInvestigation(body) };
+  }
 }

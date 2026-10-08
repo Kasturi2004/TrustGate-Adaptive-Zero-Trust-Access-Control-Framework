@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { fetchAccessHistory, fetchAccessRequest } from "../api/accessHistory.ts";
+import {
+  fetchAccessHistory,
+  fetchAccessRequest,
+  type AccessRequestDetail,
+} from "../api/accessHistory.ts";
 import type { AccessHistoryEntry } from "../types/accessHistory.ts";
+import { useProfileRole } from "../auth/useProfileRole.ts";
+import { AdminEventInvestigationPage } from "./AdminEventInvestigationPage.tsx";
 
 const PAGE_SIZE = 10;
 const SAFE_ERROR = "Access history is temporarily unavailable. Please try again.";
@@ -9,7 +15,7 @@ const SAFE_ERROR = "Access history is temporarily unavailable. Please try again.
 type DetailLoadState =
   | { key: string; status: "loading" }
   | { key: string; status: "error" }
-  | { key: string; status: "success"; record: AccessHistoryEntry };
+  | { key: string; status: "success"; detail: AccessRequestDetail };
 
 type HistoryLoadState =
   | { key: string; status: "loading" }
@@ -21,6 +27,24 @@ function formatDate(value: string): string {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function formatAuthenticatorStatus(record: AccessHistoryEntry): string {
+  if (!record.mfa_was_required) return "Not required";
+  switch (record.mfa_status) {
+    case "SUCCESS":
+      return "Verified";
+    case "PENDING":
+      return "Verification pending";
+    case "EXPIRED":
+      return "Expired";
+    case "LOCKED":
+      return "Locked";
+    case null:
+      return "Not recorded";
+    default:
+      return "Status unavailable";
+  }
 }
 
 export function DetailFields({ record }: { record: AccessHistoryEntry }) {
@@ -47,18 +71,19 @@ export function DetailFields({ record }: { record: AccessHistoryEntry }) {
         <dd>{record.final_outcome ?? "Pending"}</dd>
       </div>
       <div>
-        <dt>MFA required</dt>
+        <dt>Authenticator required</dt>
         <dd>{record.mfa_was_required ? "Yes" : "No"}</dd>
       </div>
       <div>
-        <dt>MFA status</dt>
-        <dd>{record.mfa_status ?? "Not applicable"}</dd>
+        <dt>Authenticator</dt>
+        <dd>{formatAuthenticatorStatus(record)}</dd>
       </div>
     </dl>
   );
 }
 
 function AccessRequestDetail({ accessRequestId }: { accessRequestId: string }) {
+  const { role, loading: roleLoading } = useProfileRole();
   const [retryCount, setRetryCount] = useState(0);
   const requestKey = `${accessRequestId}:${retryCount}`;
   const [state, setState] = useState<DetailLoadState>({ key: requestKey, status: "loading" });
@@ -69,7 +94,7 @@ function AccessRequestDetail({ accessRequestId }: { accessRequestId: string }) {
 
     void fetchAccessRequest(accessRequestId, controller.signal)
       .then((result) => {
-        if (active) setState({ key: requestKey, status: "success", record: result });
+        if (active) setState({ key: requestKey, status: "success", detail: result });
       })
       .catch(() => {
         if (active && !controller.signal.aborted) {
@@ -117,9 +142,28 @@ function AccessRequestDetail({ accessRequestId }: { accessRequestId: string }) {
             Try again
           </button>
         </section>
+      ) : currentState.detail.kind === "admin" ? (
+        roleLoading ? (
+          <section className="panel history-state" role="status" aria-live="polite">
+            Checking administrator access…
+          </section>
+        ) : role === "ADMIN" ? (
+          <AdminEventInvestigationPage
+            investigation={currentState.detail.investigation}
+            backTo="/history"
+            backLabel="Back to history"
+          />
+        ) : (
+          <section className="panel history-state" aria-labelledby="history-error-title">
+            <h2 id="history-error-title">Unable to load request</h2>
+            <p className="history-error" role="alert">
+              {SAFE_ERROR}
+            </p>
+          </section>
+        )
       ) : (
         <section className="panel history-detail-panel" aria-label="Access request details">
-          <DetailFields record={currentState.record} />
+          <DetailFields record={currentState.detail.record} />
         </section>
       )}
     </div>
@@ -209,12 +253,14 @@ function AccessHistoryList() {
                       <span>{formatDate(record.requested_at)}</span>
                     </span>
                     <span className="history-row-outcome">
-                      <span>{record.initial_decision}</span>
-                      <small>{record.final_outcome ?? "Pending"}</small>
+                      <span>Initial decision: {record.initial_decision}</span>
+                      <small>Final outcome: {record.final_outcome ?? "Pending"}</small>
                     </span>
                     <span className="history-row-mfa">
-                      <span>MFA {record.mfa_was_required ? "required" : "not required"}</span>
-                      <small>{record.mfa_status ?? "Not applicable"}</small>
+                      <span>
+                        Authenticator {record.mfa_was_required ? "required" : "not required"}
+                      </span>
+                      <small>Authenticator: {formatAuthenticatorStatus(record)}</small>
                     </span>
                     <span className="history-row-id">{record.id}</span>
                     <span className="history-row-arrow" aria-hidden="true">

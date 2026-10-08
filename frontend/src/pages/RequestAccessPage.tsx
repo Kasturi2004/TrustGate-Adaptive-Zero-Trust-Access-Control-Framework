@@ -111,8 +111,8 @@ export function RequestAccessPage() {
       <header className="page-heading">
         <div>
           <span className="page-eyebrow">Access gateway</span>
-          <h1 id="access-request-title">Request protected access</h1>
-          <p>TrustGate will evaluate your request before access is approved.</p>
+          <h1 id="access-request-title">Request access to Operations Dashboard</h1>
+          <p>TrustGate will evaluate your request before access is granted.</p>
         </div>
       </header>
       <div className="request-layout">
@@ -121,7 +121,7 @@ export function RequestAccessPage() {
             <span className="request-section-number">01</span>
             <div>
               <h2 id="request-resource-title">Protected resource</h2>
-              <p>Choose a resource for this access request.</p>
+              <p>Request access to this protected resource.</p>
             </div>
           </div>
           <div className="request-resource-card">

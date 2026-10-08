@@ -116,6 +116,11 @@ describe("AccountPage authenticator enrollment", () => {
     const wrapper = accountRoute?.props.element as UiNode;
     expect(wrapper.type).toBe(ProtectedRoute);
     expect((wrapper.props.children as UiNode).type).toBe(AccountPage);
+    expect(nodeText(renderPage())).toContain("Authenticator");
+    expect(nodeText(renderPage())).toContain(
+      "Set up and manage the authenticator used when TrustGate requires additional verification.",
+    );
+    expect(nodeText(renderPage())).not.toContain("TOTP");
     expect(nodeText(renderPage())).toContain("Set up Authenticator");
   });
 
@@ -157,7 +162,7 @@ describe("AccountPage authenticator enrollment", () => {
     const success = renderPage();
     expect(verifyEnrollmentMock).toHaveBeenCalledWith("012345");
     expect(nodeText(success)).toContain("Authenticator enrolled successfully.");
-    expect(nodeText(success)).toContain("STEP-UP");
+    expect(nodeText(success)).toContain("additional verification");
     expect(nodeText(success)).not.toContain("PRIVATE-MANUAL-KEY");
     expect(hookHarness.states[1]).toBeNull();
     expect(hookHarness.states[2]).toBe("");

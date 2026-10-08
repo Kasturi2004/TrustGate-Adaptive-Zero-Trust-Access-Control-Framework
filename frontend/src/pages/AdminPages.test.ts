@@ -309,6 +309,11 @@ describe("admin dashboard", () => {
     expect(text).toContain("Flagged");
     expect(text).toContain("do not modify Trust Score or access decisions");
     expect(text).toContain("Total requests");
+    expect(text).toContain("Initial ALLOW decisions");
+    expect(text).toContain("Initial STEP-UP decisions");
+    expect(text).toContain("Initial BLOCK decisions");
+    expect(text).toContain("initial decision");
+    expect(text).toContain("different final outcome");
     expect(text).toContain("MFA success rate");
     expect(dashboardMock).toHaveBeenCalledWith(
       expect.stringMatching(/T00:00:00Z$/),

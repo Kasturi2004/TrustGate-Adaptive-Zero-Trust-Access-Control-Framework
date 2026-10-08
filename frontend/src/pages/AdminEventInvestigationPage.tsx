@@ -74,13 +74,25 @@ export function ChallengeHistory({ challenges }: { challenges: InvestigationOtpC
   );
 }
 
-export function AdminEventInvestigationPage() {
+interface AdminEventInvestigationPageProps {
+  investigation?: AdminEventInvestigation;
+  backTo?: string;
+  backLabel?: string;
+}
+
+export function AdminEventInvestigationPage({
+  investigation: suppliedInvestigation,
+  backTo = "/admin/events",
+  backLabel = "Back to security events",
+}: AdminEventInvestigationPageProps = {}) {
   const { eventId = "" } = useParams();
   const [retryCount, setRetryCount] = useState(0);
   const requestKey = `${eventId}:${retryCount}`;
   const [state, setState] = useState<LoadState>({ key: requestKey, status: "loading" });
 
   useEffect(() => {
+    if (suppliedInvestigation) return;
+
     const controller = new AbortController();
     let active = true;
     void fetchAdminEventInvestigation(eventId, controller.signal)
@@ -94,21 +106,28 @@ export function AdminEventInvestigationPage() {
       active = false;
       controller.abort();
     };
-  }, [eventId, requestKey]);
+  }, [eventId, requestKey, suppliedInvestigation]);
 
-  const currentState =
-    state.key === requestKey ? state : ({ key: requestKey, status: "loading" } as const);
+  const currentState = suppliedInvestigation
+    ? { key: requestKey, status: "success" as const, data: suppliedInvestigation }
+    : state.key === requestKey
+      ? state
+      : ({ key: requestKey, status: "loading" } as const);
 
   return (
     <div className="admin-page admin-investigation-page">
       <header className="page-heading">
         <div>
-          <span className="page-eyebrow">Administration · Investigation</span>
-          <h1>Event investigation</h1>
+          <span className="page-eyebrow">
+            {suppliedInvestigation
+              ? "Administration · Access History"
+              : "Administration · Investigation"}
+          </span>
+          <h1>{suppliedInvestigation ? "Access request investigation" : "Event investigation"}</h1>
           <p>Persisted event context and related verification history.</p>
         </div>
-        <Link className="history-back-link" to="/admin/events">
-          Back to security events
+        <Link className="history-back-link" to={backTo}>
+          {backLabel}
         </Link>
       </header>
 

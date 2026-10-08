@@ -77,9 +77,13 @@ export function AdminDashboardPage() {
           value: String(metrics.total_requests),
           href: eventLink(activeRange.from, activeRange.to),
         },
-        { label: "ALLOW", value: String(metrics.allow_count), decision: "ALLOW" },
-        { label: "STEP-UP", value: String(metrics.step_up_count), decision: "STEP_UP" },
-        { label: "BLOCK", value: String(metrics.block_count), decision: "BLOCK" },
+        { label: "Initial ALLOW decisions", value: String(metrics.allow_count), decision: "ALLOW" },
+        {
+          label: "Initial STEP-UP decisions",
+          value: String(metrics.step_up_count),
+          decision: "STEP_UP",
+        },
+        { label: "Initial BLOCK decisions", value: String(metrics.block_count), decision: "BLOCK" },
         {
           label: "Average Trust Score",
           value: score(metrics.average_trust_score),
@@ -105,6 +109,10 @@ export function AdminDashboardPage() {
           <span className="page-eyebrow">Administration</span>
           <h1>Admin dashboard</h1>
           <p>Read-only access and security metrics from the backend.</p>
+          <p>
+            Decision counts show each request’s initial decision. STEP-UP requests may have a
+            different final outcome after Authenticator verification.
+          </p>
         </div>
         <Link className="history-back-link" to="/admin/events">
           View security events

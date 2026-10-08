@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { hookHarness, historyMock, detailMock, routeParams } = vi.hoisted(() => ({
+const { hookHarness, historyMock, detailMock, profileRoleMock, routeParams } = vi.hoisted(() => ({
   hookHarness: {
     states: [] as unknown[],
     stateCursor: 0,
@@ -9,6 +9,7 @@ const { hookHarness, historyMock, detailMock, routeParams } = vi.hoisted(() => (
   },
   historyMock: vi.fn(),
   detailMock: vi.fn(),
+  profileRoleMock: vi.fn(),
   routeParams: { accessRequestId: undefined as string | undefined },
 }));
 
@@ -56,12 +57,15 @@ vi.mock("../api/accessHistory.ts", () => ({
   fetchAccessHistory: historyMock,
   fetchAccessRequest: detailMock,
 }));
+vi.mock("../auth/useProfileRole.ts", () => ({ useProfileRole: profileRoleMock }));
 vi.mock("react-router-dom", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router-dom")>();
   return { ...actual, useParams: () => routeParams };
 });
 
 import { AccessHistoryPage, DetailFields } from "./AccessHistoryPage.tsx";
+import { AdminEventInvestigationPage, Field } from "./AdminEventInvestigationPage.tsx";
+import type { AdminEventInvestigation } from "../types/admin.ts";
 
 interface UiNode {
   type: unknown;
@@ -78,6 +82,81 @@ const row = {
   mfa_status: "SUCCESS",
 };
 
+const investigation: AdminEventInvestigation = {
+  event: {
+    id: "223e4567-e89b-12d3-a456-426614174000",
+    event_type: "ACCESS_STEP_UP",
+    actor_id: "323e4567-e89b-12d3-a456-426614174000",
+    target_user_id: null,
+    decision: "STEP_UP",
+    risk_category: "MEDIUM",
+    created_at: "2026-10-02T12:00:00Z",
+  },
+  access_request: {
+    id: row.id,
+    user_id: "323e4567-e89b-12d3-a456-426614174000",
+    resource_id: row.resource_id,
+    source_ip: "192.0.2.10",
+    resolved_region: "Example region",
+    initial_decision: "STEP_UP",
+    mfa_required: true,
+    final_outcome: "ALLOW",
+    requested_at: row.requested_at,
+    resolved_at: "2026-10-02T12:01:00Z",
+    device: { id: "423e4567-e89b-12d3-a456-426614174000", device_hash: "abcd…" },
+  },
+  context_signals: {
+    captured_at: "2026-10-02T12:00:00Z",
+    device_familiarity_raw: "unknown_device",
+    device_health_raw: "healthy",
+    location_raw: "expected_region",
+    time_raw: "usual_time",
+  },
+  trust_evaluation: {
+    id: "523e4567-e89b-12d3-a456-426614174000",
+    trust_score: 67,
+    risk_classification: "MEDIUM",
+    status: "COMPLETE",
+    evaluated_at: "2026-10-02T12:00:00Z",
+    factors: [
+      {
+        factor_name: "device_familiarity",
+        raw_value: "unknown_device",
+        normalized_score: 20,
+        weight: 0.3,
+        weighted_contribution: 6,
+        explanation: "Device familiarity explanation",
+      },
+    ],
+  },
+  policy_decision: {
+    id: "623e4567-e89b-12d3-a456-426614174000",
+    decision: "STEP_UP",
+    decision_reason: "Additional verification required",
+    decided_at: "2026-10-02T12:00:00Z",
+    policy_version: {
+      id: "723e4567-e89b-12d3-a456-426614174000",
+      version_label: "v1",
+      created_at: "2026-10-01T12:00:00Z",
+    },
+  },
+  otp_challenges: [
+    {
+      id: "823e4567-e89b-12d3-a456-426614174000",
+      status: "SUCCESS",
+      attempt_count: 1,
+      created_at: "2026-10-02T12:00:00Z",
+      expires_at: "2026-10-02T12:05:00Z",
+      verified_at: "2026-10-02T12:01:00Z",
+    },
+  ],
+  related_events: [],
+  behavioral_indicators: {
+    repeated_failed_access_attempts: { count: 0, normalized_value: 0, flagged: false },
+    recent_blocks: { count: 0, normalized_value: 0, flagged: false },
+  },
+};
+
 function renderPage(): UiNode {
   hookHarness.stateCursor = 0;
   hookHarness.effectCursor = 0;
@@ -85,7 +164,35 @@ function renderPage(): UiNode {
   while (typeof element.type === "function") {
     element = (element.type as (props: Record<string, unknown>) => UiNode)(element.props);
   }
-  return element;
+  return expandAdminInvestigation(element) as UiNode;
+}
+
+function expandAdminInvestigation(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(expandAdminInvestigation);
+  if (typeof node !== "object" || node === null || !("type" in node) || !("props" in node)) {
+    return node;
+  }
+  const candidate = node as UiNode;
+  if (candidate.type === AdminEventInvestigationPage) {
+    return expandAdminInvestigation(
+      AdminEventInvestigationPage(
+        candidate.props as {
+          investigation: AdminEventInvestigation;
+          backTo: string;
+          backLabel: string;
+        },
+      ),
+    );
+  }
+  if (candidate.type === Field) {
+    return expandAdminInvestigation(
+      Field(candidate.props as { label: string; value: string | null | undefined }),
+    );
+  }
+  return {
+    ...candidate,
+    props: { ...candidate.props, children: expandAdminInvestigation(candidate.props.children) },
+  };
 }
 
 function findNode(node: unknown, predicate: (candidate: UiNode) => boolean): UiNode | undefined {
@@ -123,6 +230,7 @@ beforeEach(() => {
   routeParams.accessRequestId = undefined;
   historyMock.mockReset();
   detailMock.mockReset();
+  profileRoleMock.mockReset().mockReturnValue({ role: "USER", loading: false });
 });
 
 afterEach(() => {
@@ -144,8 +252,11 @@ describe("AccessHistoryPage", () => {
     expect(textContent(page)).toContain(row.resource_id);
     expect(textContent(page)).toContain("STEP_UP");
     expect(textContent(page)).toContain("ALLOW");
-    expect(textContent(page)).toMatch(/MFA\s+required/);
-    expect(textContent(page)).toContain("SUCCESS");
+    expect(textContent(page)).toMatch(/Initial decision:\s+STEP_UP/);
+    expect(textContent(page)).toMatch(/Final outcome:\s+ALLOW/);
+    expect(textContent(page)).toMatch(/Authenticator:\s+Verified/);
+    expect(textContent(page)).toMatch(/Authenticator\s+required/);
+    expect(textContent(page)).not.toContain("SUCCESS");
     expect(textContent(page)).not.toMatch(
       /trust score|factor|weight|threshold|policy version|decision reason|fingerprint|IP address|location|OTP/i,
     );
@@ -210,7 +321,7 @@ describe("AccessHistoryPage", () => {
 
   it("loads the detail endpoint and renders the same seven-field allow-list", async () => {
     routeParams.accessRequestId = row.id;
-    detailMock.mockResolvedValue(row);
+    detailMock.mockResolvedValue({ kind: "user", record: row });
     renderPage();
     await flushPromises();
     const page = renderPage();
@@ -224,8 +335,9 @@ describe("AccessHistoryPage", () => {
     expect(detailContent).toContain(row.resource_id);
     expect(detailContent).toContain("STEP_UP");
     expect(detailContent).toContain("ALLOW");
-    expect(detailContent).toContain("MFA required");
-    expect(detailContent).toContain("SUCCESS");
+    expect(detailContent).toContain("Authenticator required");
+    expect(detailContent).toContain("Authenticator");
+    expect(detailContent).toContain("Verified");
     expect(textContent(page)).not.toMatch(
       /trust score|factor|weight|threshold|policy version|decision reason|fingerprint|IP address|location|OTP/i,
     );
@@ -233,5 +345,54 @@ describe("AccessHistoryPage", () => {
       /trust score|factor|weight|threshold|policy version|decision reason|fingerprint|IP address|location|OTP/i,
     );
     expect(findNode(page, (node) => node.props.to === "/history")).toBeDefined();
+  });
+
+  it("renders an ADMIN investigation response using the existing investigation presentation", async () => {
+    routeParams.accessRequestId = row.id;
+    profileRoleMock.mockReturnValue({ role: "ADMIN", loading: false });
+    detailMock.mockResolvedValue({ kind: "admin", investigation });
+
+    renderPage();
+    await flushPromises();
+    const page = renderPage();
+    const text = textContent(page);
+
+    expect(text).toContain("Access request investigation");
+    expect(text).toContain("Trust evaluation and factors");
+    expect(text).toContain("67");
+    expect(text).toContain("Policy decision");
+    expect(text).toContain("MFA / OTP challenges");
+    expect(findNode(page, (node) => node.props.to === "/history")).toBeDefined();
+    expect(detailMock).toHaveBeenCalledWith(row.id, expect.any(AbortSignal));
+  });
+
+  it("does not render an ADMIN investigation response for a USER", async () => {
+    routeParams.accessRequestId = row.id;
+    profileRoleMock.mockReturnValue({ role: "USER", loading: false });
+    detailMock.mockResolvedValue({ kind: "admin", investigation });
+
+    renderPage();
+    await flushPromises();
+    const page = renderPage();
+    const text = textContent(page);
+
+    expect(text).toContain("Access history is temporarily unavailable.");
+    expect(text).not.toContain("Trust evaluation and factors");
+    expect(text).not.toContain("Policy decision");
+    expect(text).not.toContain("192.0.2.10");
+  });
+
+  it("shows a safe error for malformed or unexpected detail responses", async () => {
+    routeParams.accessRequestId = row.id;
+    detailMock.mockRejectedValue(new Error("private malformed investigation"));
+
+    renderPage();
+    await flushPromises();
+    const page = renderPage();
+    const text = textContent(page);
+
+    expect(text).toContain("Access history is temporarily unavailable.");
+    expect(text).not.toContain("private malformed investigation");
+    expect(text).not.toContain("Trust evaluation and factors");
   });
 });

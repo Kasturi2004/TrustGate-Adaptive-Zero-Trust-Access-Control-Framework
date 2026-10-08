@@ -189,7 +189,7 @@ describe("RequestAccessPage", () => {
     expectTypeOf<AccessDecision>().toEqualTypeOf<"ALLOW" | "STEP_UP" | "BLOCK">();
   });
 
-  it("renders the placeholder resource action and remains behind ProtectedRoute", () => {
+  it("names the fixed Operations Dashboard resource and remains behind ProtectedRoute", () => {
     const page = renderPage();
     expect(
       findNode(page, (candidate) => candidate.props.className === "request-page"),
@@ -199,6 +199,8 @@ describe("RequestAccessPage", () => {
     ).toBeDefined();
     expect(nodeText(page)).toContain("Operations Dashboard");
     expect(nodeText(page)).toContain("ops-dashboard");
+    expect(nodeText(page)).toContain("Request access to Operations Dashboard");
+    expect(nodeText(page)).not.toContain("Choose a resource");
     expect(nodeText(page)).toContain("Request Access");
 
     const routes = (AppRoutes() as UiNode).props.children as UiNode[];
@@ -226,17 +228,27 @@ describe("RequestAccessPage", () => {
   });
 
   it.each([
-    ["ALLOW", "Access granted", "Access is approved.", "decision-allow"],
+    [
+      "ALLOW",
+      "Access granted",
+      "Access to Operations Dashboard was granted immediately.",
+      "decision-allow",
+    ],
     [
       "STEP_UP",
       "Additional verification required",
-      "Additional verification is required to continue.",
+      "Verify with your Authenticator app before access can be granted.",
       "decision-step",
     ],
-    ["BLOCK", "Access denied", "Access is not approved.", "decision-block"],
+    [
+      "BLOCK",
+      "Access denied",
+      "Access to Operations Dashboard was denied based on the current security assessment.",
+      "decision-block",
+    ],
   ] as const)(
     "renders the backend %s decision without recalculating it",
-    async (decision, label, explanation, tone) => {
+    async (decision, label, description, tone) => {
       apiRequestMock.mockResolvedValue(
         responseFor(decision, {
           mfa_challenge_id: decision === "STEP_UP" ? MFA_CHALLENGE_ID : null,
@@ -247,17 +259,28 @@ describe("RequestAccessPage", () => {
 
       const result = renderPage();
       expect(nodeText(result)).toContain(label);
-      if (decision === "ALLOW") expect(nodeText(result)).toContain("Your request was approved.");
+      expect(nodeText(result)).toContain(description);
+      if (decision === "ALLOW") {
+        expect(nodeText(result)).toContain(
+          "Access to Operations Dashboard was granted immediately.",
+        );
+      }
       if (decision === "STEP_UP") {
-        expect(nodeText(result)).toContain("Additional verification is required to continue.");
+        expect(nodeText(result)).toContain(
+          "Verify with your Authenticator app before access can be granted.",
+        );
       }
       if (decision === "BLOCK") {
-        expect(nodeText(result)).toContain("Access is not approved.");
+        expect(nodeText(result)).toContain(
+          "Access to Operations Dashboard was denied based on the current security assessment.",
+        );
+        expect(nodeText(result)).not.toContain("private-decision-reason");
+        expect(nodeText(result)).not.toContain("private-exception-details");
         expect(findNode(result, (candidate) => candidate.type === Link)?.props.to).toBe(
           "/dashboard",
         );
       }
-      expect(nodeText(result)).toContain(explanation);
+      expect(nodeText(result)).not.toContain("private-decision-reason");
       const presentation = findNode(result, (candidate) =>
         String(candidate.props.className ?? "").includes("decision-presentation"),
       );
@@ -365,7 +388,7 @@ describe("RequestAccessPage", () => {
       code: "012345",
     });
     expect(String(apiRequestMock.mock.calls[1]?.[0])).not.toContain(MFA_CHALLENGE_ID);
-    expect(nodeText(page)).toContain("MFA VERIFIED");
+    expect(nodeText(page)).toContain("AUTHENTICATOR VERIFIED");
     expect(nodeText(page)).not.toContain(MFA_CHALLENGE_ID);
     expect(nodeText(page)).not.toContain("evaluation-test-id");
     expect(hookHarness.states[2]).toMatchObject({ decision: "STEP_UP" });
