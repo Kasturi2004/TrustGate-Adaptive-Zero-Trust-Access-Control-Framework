@@ -199,10 +199,9 @@ def test_concurrent_dashboard_redemption_has_exactly_one_winner(
         asyncio.run(exercise())
     finally:
         asyncio.run(engine.dispose())
-        cleanup_engine = create_async_engine_for_url(
-            migrated_test_database.url, null_pool=True
-        )
+        cleanup_engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
         try:
+
             async def remove_committed_request_and_device() -> None:
                 async with cleanup_engine.begin() as connection:
                     await connection.execute(

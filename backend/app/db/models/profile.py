@@ -19,7 +19,8 @@ class Profile(Base):
         # Supabase owns auth.users; its FK is created by the database migration.
         # Keeping this external FK out of ORM metadata lets flush sort this model
         # without requiring Supabase's managed table in Base.metadata.
-        PG_UUID(as_uuid=True), primary_key=True
+        PG_UUID(as_uuid=True),
+        primary_key=True,
     )
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'USER'"))

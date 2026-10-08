@@ -49,8 +49,7 @@ class DeviceRepository:
             )
         )
         eligible_request = exists(
-            select(AccessRequest.id)
-            .where(
+            select(AccessRequest.id).where(
                 AccessRequest.id == access_request_id,
                 AccessRequest.user_id == user_id,
                 AccessRequest.auth_session_id == auth_session_id,
@@ -79,9 +78,7 @@ class DeviceRepository:
         result = await self._session.scalars(statement.with_for_update(of=Device))
         return result.first()
 
-    async def set_recognized_at_if_unknown(
-        self, device: Device, recognized_at: datetime
-    ) -> Device:
+    async def set_recognized_at_if_unknown(self, device: Device, recognized_at: datetime) -> Device:
         """Recognize an existing device without changing its identity or history."""
         if device.recognized_at is None:
             device.recognized_at = recognized_at

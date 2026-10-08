@@ -340,9 +340,7 @@ def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
             events = list(
                 (
                     await session.scalars(
-                        select(SecurityEvent).where(
-                            SecurityEvent.access_request_id == request.id
-                        )
+                        select(SecurityEvent).where(SecurityEvent.access_request_id == request.id)
                     )
                 ).all()
             )
@@ -603,14 +601,11 @@ def test_complete_pipeline_persists_eight_rows_atomically(
             )
             == 1
         )
-        assert (
-            await session.scalar(
-                select(func.count())
-                .select_from(OtpChallenge)
-                .where(OtpChallenge.access_request_id == request.id)
-            )
-            == int(decision == "STEP_UP")
-        )
+        assert await session.scalar(
+            select(func.count())
+            .select_from(OtpChallenge)
+            .where(OtpChallenge.access_request_id == request.id)
+        ) == int(decision == "STEP_UP")
         assert (
             await session.scalar(
                 select(func.count())
@@ -642,9 +637,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         events = list(
             (
                 await session.scalars(
-                    select(SecurityEvent).where(
-                        SecurityEvent.access_request_id == request.id
-                    )
+                    select(SecurityEvent).where(SecurityEvent.access_request_id == request.id)
                 )
             ).all()
         )
@@ -765,9 +758,7 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
                 == 0
             )
             evaluation = await session.scalar(
-                select(TrustEvaluation).where(
-                    TrustEvaluation.access_request_id == request.id
-                )
+                select(TrustEvaluation).where(TrustEvaluation.access_request_id == request.id)
             )
             assert evaluation is not None
             assert evaluation.status == "DEGRADED_FAILSAFE"
@@ -1052,9 +1043,7 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             assert request.final_outcome is None
             assert request.resolved_at is None
             evaluation = await session.scalar(
-                select(TrustEvaluation).where(
-                    TrustEvaluation.access_request_id == request.id
-                )
+                select(TrustEvaluation).where(TrustEvaluation.access_request_id == request.id)
             )
             assert evaluation is not None
             assert evaluation.status == "DEGRADED_FAILSAFE"
