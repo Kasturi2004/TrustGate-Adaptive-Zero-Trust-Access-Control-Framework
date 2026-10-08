@@ -2,7 +2,6 @@
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,8 +11,8 @@ from app.db.models.trust_factor import TrustFactor
 from app.db.repositories.trust_evaluation import TrustEvaluationRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
 from app.schemas.trust import TrustEvaluationResult
+from app.services.risk_classifier import classify_risk
 
-RiskClassification = Literal["LOW", "MEDIUM", "HIGH"]
 _EXPECTED_FACTORS = {
     "device_familiarity",
     "device_health",
@@ -28,7 +27,6 @@ async def persist_trust_evaluation(
     result: TrustEvaluationResult,
     access_request_id: UUID,
     policy_version_id: UUID,
-    risk_classification: RiskClassification,
     evaluated_at: datetime,
 ) -> TrustEvaluation:
     """Stage an evaluation and exactly four factors in one savepoint.
@@ -48,7 +46,7 @@ async def persist_trust_evaluation(
         access_request_id=access_request_id,
         policy_version_id=policy_version_id,
         trust_score=result.trust_score,
-        risk_classification=risk_classification,
+        risk_classification=classify_risk(result.trust_score),
         status="COMPLETE",
         evaluated_at=evaluated_at,
     )

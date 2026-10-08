@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import TypeVar
 from uuid import UUID
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from app.db.session import create_async_engine_for_url
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -19,6 +21,16 @@ _ALLOWED_TEST_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres"}
 _REQUIRED_TEST_DATABASE = "trustgate_test"
 T = TypeVar("T")
 SessionOperation = Callable[[AsyncSession], Awaitable[T]]
+
+
+def repository_migration_head() -> str:
+    """Return the repository's sole Alembic head revision."""
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if head is None:
+        raise RuntimeError("Alembic repository has no migration head")
+    return head
 
 
 async def ensure_auth_user_profile(
@@ -165,7 +177,7 @@ async def verify_migration_head(test_database_url: str) -> None:
             revision = await connection.scalar(
                 text("SELECT version_num FROM public.alembic_version")
             )
-        if revision != "20261005_09":
+        if revision != repository_migration_head():
             raise RuntimeError("Scratch database did not reach the expected Alembic head")
     finally:
         await engine.dispose()

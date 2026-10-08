@@ -211,6 +211,17 @@ function findNode(node: unknown, predicate: (candidate: UiNode) => boolean): UiN
   return findNode(candidate.props.children, predicate);
 }
 
+function countNodes(node: unknown, predicate: (candidate: UiNode) => boolean): number {
+  if (Array.isArray(node)) {
+    return node.reduce((count, child) => count + countNodes(child, predicate), 0);
+  }
+  if (typeof node !== "object" || node === null || !("type" in node) || !("props" in node)) {
+    return 0;
+  }
+  const candidate = node as UiNode;
+  return Number(predicate(candidate)) + countNodes(candidate.props.children, predicate);
+}
+
 function textContent(node: unknown): string {
   if (typeof node === "string" || typeof node === "number") return String(node);
   if (Array.isArray(node)) return node.map(textContent).join(" ");
@@ -249,11 +260,13 @@ describe("AccessHistoryPage", () => {
 
     expect(textContent(page)).toContain("Access history");
     expect(textContent(page)).toContain(row.id);
-    expect(textContent(page)).toContain(row.resource_id);
-    expect(textContent(page)).toContain("STEP_UP");
-    expect(textContent(page)).toContain("ALLOW");
-    expect(textContent(page)).toMatch(/Initial decision:\s+STEP_UP/);
-    expect(textContent(page)).toMatch(/Final outcome:\s+ALLOW/);
+    expect(textContent(page)).toContain("Operations Dashboard");
+    expect(textContent(page)).not.toContain("ops-dashboard");
+    expect(textContent(page)).toContain("Additional verification required");
+    expect(textContent(page)).toContain("Access granted");
+    expect(textContent(page)).toMatch(/Request result:\s+Additional verification required/);
+    expect(textContent(page)).toMatch(/Outcome:\s+Access granted/);
+    expect(textContent(page)).not.toMatch(/\bALLOW\b|\bSTEP_UP\b|\bBLOCK\b/);
     expect(textContent(page)).toMatch(/Authenticator:\s+Verified/);
     expect(textContent(page)).toMatch(/Authenticator\s+required/);
     expect(textContent(page)).not.toContain("SUCCESS");
@@ -332,9 +345,11 @@ describe("AccessHistoryPage", () => {
     expect(detailFields).toBeDefined();
     const detailContent = textContent(DetailFields(detailFields?.props as { record: typeof row }));
     expect(detailContent).toContain(row.id);
-    expect(detailContent).toContain(row.resource_id);
-    expect(detailContent).toContain("STEP_UP");
-    expect(detailContent).toContain("ALLOW");
+    expect(detailContent).toContain("Operations Dashboard");
+    expect(detailContent).not.toContain("ops-dashboard");
+    expect(detailContent).toContain("Additional verification required");
+    expect(detailContent).toContain("Access granted");
+    expect(detailContent).not.toMatch(/\bALLOW\b|\bSTEP_UP\b|\bBLOCK\b/);
     expect(detailContent).toContain("Authenticator required");
     expect(detailContent).toContain("Authenticator");
     expect(detailContent).toContain("Verified");
@@ -363,6 +378,8 @@ describe("AccessHistoryPage", () => {
     expect(text).toContain("Policy decision");
     expect(text).toContain("MFA / OTP challenges");
     expect(findNode(page, (node) => node.props.to === "/history")).toBeDefined();
+    expect(countNodes(page, (node) => node.type === "h1")).toBe(1);
+    expect(countNodes(page, (node) => node.props.to === "/history")).toBe(1);
     expect(detailMock).toHaveBeenCalledWith(row.id, expect.any(AbortSignal));
   });
 

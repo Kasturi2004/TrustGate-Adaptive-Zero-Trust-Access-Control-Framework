@@ -2,10 +2,13 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 from app.db.models import Base
-from sqlalchemy import DateTime, Numeric, Text, UniqueConstraint
+from app.db.models.profile import Profile
+from sqlalchemy import DateTime, Numeric, Text, UniqueConstraint, create_engine, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import Session, make_transient_to_detached
 
 EXPECTED_TABLES = {
     "profiles",
@@ -39,8 +42,7 @@ def test_primary_key_definitions() -> None:
     profile_id = profiles.c.id
     assert profile_id.primary_key
     assert isinstance(profile_id.type, PG_UUID)
-    profile_fk = next(iter(profile_id.foreign_keys))
-    assert profile_fk.target_fullname == "auth.users.id"
+    assert not profile_id.foreign_keys
 
     rate_limit_key = Base.metadata.tables["public.rate_limit_state"].c.key
     assert rate_limit_key.primary_key
@@ -198,3 +200,64 @@ def test_model_metadata_import_does_not_create_a_database_engine() -> None:
         capture_output=True,
         text=True,
     )
+
+
+def test_profile_role_update_commits_without_external_auth_table_metadata() -> None:
+    """A Profile flush does not resolve Supabase's external auth.users table."""
+    assert "auth.users" not in Base.metadata.tables
+
+    engine = create_engine("sqlite://")
+    user_id = uuid4()
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("ATTACH DATABASE ':memory:' AS public"))
+            connection.execute(
+                text(
+                    "CREATE TABLE public.profiles ("
+                    "id CHAR(32) PRIMARY KEY, email TEXT, role TEXT, timezone TEXT, "
+                    "is_deleted BOOLEAN, created_at DATETIME, updated_at DATETIME)"
+                )
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO public.profiles "
+                    "(id, email, role, timezone, is_deleted, created_at, updated_at) "
+                    "VALUES (:id, :email, 'USER', 'UTC', false, "
+                    "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                ),
+                {"id": user_id.hex, "email": "employee@example.test"},
+            )
+
+        with Session(engine) as session:
+            profile = Profile(
+                id=user_id,
+                email="employee@example.test",
+                role="USER",
+                timezone="UTC",
+                is_deleted=False,
+            )
+            make_transient_to_detached(profile)
+            session.add(profile)
+            profile.role = "ADMIN"
+            session.commit()
+
+        with engine.connect() as connection:
+            role = connection.execute(
+                text("SELECT role FROM public.profiles WHERE id = :id"),
+                {"id": user_id.hex},
+            ).scalar_one()
+        assert role == "ADMIN"
+    finally:
+        engine.dispose()
+
+
+def test_initial_migration_retains_profile_auth_foreign_key() -> None:
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "alembic"
+        / "versions"
+        / "20260928_01_initial_schema.py"
+    ).read_text(encoding="utf-8")
+    assert '"fk_profiles_id_users"' in migration
+    assert 'referent_schema="auth"' in migration
+    assert 'ondelete="RESTRICT"' in migration

@@ -47,6 +47,24 @@ function formatAuthenticatorStatus(record: AccessHistoryEntry): string {
   }
 }
 
+function formatResource(resourceId: string): string {
+  return resourceId === "ops-dashboard" ? "Operations Dashboard" : "Protected resource";
+}
+
+function formatDecision(value: string | null, pending = "Pending"): string {
+  if (value === null) return pending;
+  switch (value) {
+    case "ALLOW":
+      return "Access granted";
+    case "STEP_UP":
+      return "Additional verification required";
+    case "BLOCK":
+      return "Access denied";
+    default:
+      return "Outcome unavailable";
+  }
+}
+
 export function DetailFields({ record }: { record: AccessHistoryEntry }) {
   return (
     <dl className="history-detail-grid">
@@ -56,19 +74,19 @@ export function DetailFields({ record }: { record: AccessHistoryEntry }) {
       </div>
       <div>
         <dt>Resource</dt>
-        <dd>{record.resource_id}</dd>
+        <dd>{formatResource(record.resource_id)}</dd>
       </div>
       <div>
         <dt>Requested</dt>
         <dd>{formatDate(record.requested_at)}</dd>
       </div>
       <div>
-        <dt>Initial decision</dt>
-        <dd>{record.initial_decision}</dd>
+        <dt>Request result</dt>
+        <dd>{formatDecision(record.initial_decision)}</dd>
       </div>
       <div>
-        <dt>Final outcome</dt>
-        <dd>{record.final_outcome ?? "Pending"}</dd>
+        <dt>Outcome</dt>
+        <dd>{formatDecision(record.final_outcome)}</dd>
       </div>
       <div>
         <dt>Authenticator required</dt>
@@ -111,6 +129,21 @@ function AccessRequestDetail({ accessRequestId }: { accessRequestId: string }) {
   const currentState =
     state.key === requestKey ? state : { key: requestKey, status: "loading" as const };
 
+  if (
+    currentState.status === "success" &&
+    currentState.detail.kind === "admin" &&
+    !roleLoading &&
+    role === "ADMIN"
+  ) {
+    return (
+      <AdminEventInvestigationPage
+        investigation={currentState.detail.investigation}
+        backTo="/history"
+        backLabel="Back to history"
+      />
+    );
+  }
+
   return (
     <div className="history-page">
       <header className="page-heading">
@@ -147,12 +180,6 @@ function AccessRequestDetail({ accessRequestId }: { accessRequestId: string }) {
           <section className="panel history-state" role="status" aria-live="polite">
             Checking administrator access…
           </section>
-        ) : role === "ADMIN" ? (
-          <AdminEventInvestigationPage
-            investigation={currentState.detail.investigation}
-            backTo="/history"
-            backLabel="Back to history"
-          />
         ) : (
           <section className="panel history-state" aria-labelledby="history-error-title">
             <h2 id="history-error-title">Unable to load request</h2>
@@ -249,12 +276,12 @@ function AccessHistoryList() {
                 <li key={record.id}>
                   <Link className="history-row" to={`/history/${encodeURIComponent(record.id)}`}>
                     <span className="history-row-main">
-                      <strong>{record.resource_id}</strong>
+                      <strong>{formatResource(record.resource_id)}</strong>
                       <span>{formatDate(record.requested_at)}</span>
                     </span>
                     <span className="history-row-outcome">
-                      <span>Initial decision: {record.initial_decision}</span>
-                      <small>Final outcome: {record.final_outcome ?? "Pending"}</small>
+                      <span>Request result: {formatDecision(record.initial_decision)}</span>
+                      <small>Outcome: {formatDecision(record.final_outcome)}</small>
                     </span>
                     <span className="history-row-mfa">
                       <span>

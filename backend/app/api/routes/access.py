@@ -3,7 +3,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_user
@@ -13,7 +13,12 @@ from app.core.config import Settings, get_settings
 from app.db.models.profile import Profile
 from app.db.repositories.access_request import AccessRequestRepository
 from app.db.repositories.profile import ProfileRepository
-from app.schemas.access import AccessEvaluateRequest, AccessEvaluateResponse
+from app.schemas.access import (
+    AccessEvaluateRequest,
+    AccessEvaluateResponse,
+    ProtectedDashboardResponse,
+    ProtectedResourceRequest,
+)
 from app.schemas.admin import AdminEventInvestigation
 from app.schemas.history import AccessHistoryResponse
 from app.services.access_gateway import SecurityPipeline, access_gateway, get_security_pipeline
@@ -23,6 +28,49 @@ from app.services.protected_resource import get_protected_resource
 from app.services.security_events import record_event
 
 router = APIRouter(prefix="/access", tags=["access"])
+resource_router = APIRouter(prefix="/resources", tags=["protected resources"])
+
+
+@resource_router.post("/ops-dashboard", response_model=ProtectedDashboardResponse)
+async def read_operations_dashboard(
+    payload: ProtectedResourceRequest,
+    response: Response,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> ProtectedDashboardResponse:
+    """Redeem exactly one server-approved request for protected dashboard data."""
+    response.headers["Cache-Control"] = "no-store"
+    repository = AccessRequestRepository(session)
+    try:
+        consumed = await repository.consume_dashboard_access(
+            payload.access_request_id, principal.id, principal.session_id, clock.now()
+        )
+        if not consumed:
+            await session.rollback()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        record_event(
+            session,
+            event_type="PROTECTED_RESOURCE_ACCESSED",
+            actor_id=principal.id,
+            access_request_id=payload.access_request_id,
+            decision="ALLOW",
+        )
+        await session.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred.",
+        ) from None
+    return ProtectedDashboardResponse(
+        resource_id="ops-dashboard",
+        title="Operations Dashboard",
+        summary="Your protected operations workspace is ready.",
+        status="operational",
+    )
 
 
 @router.get("/history", response_model=list[AccessHistoryResponse])
@@ -162,4 +210,5 @@ async def evaluate_access(
         decision=result.decision,
         explanation=result.explanation,
         mfa_challenge_id=result.mfa_challenge_id,
+        access_request_id=result.access_request_id,
     )

@@ -33,6 +33,7 @@ class AuthenticatedPrincipal:
     id: UUID
     email: str | None
     role: str
+    session_id: UUID
 
 
 def _not_authenticated() -> HTTPException:
@@ -77,7 +78,12 @@ async def get_current_user(
     profile = await ProfileRepository(session).get_by_id(identity.id)
     if profile is None or profile.is_deleted:
         raise _not_authenticated()
-    return AuthenticatedPrincipal(id=identity.id, email=profile.email, role=profile.role)
+    return AuthenticatedPrincipal(
+        id=identity.id,
+        email=profile.email,
+        role=profile.role,
+        session_id=identity.session_id,
+    )
 
 
 async def require_user(

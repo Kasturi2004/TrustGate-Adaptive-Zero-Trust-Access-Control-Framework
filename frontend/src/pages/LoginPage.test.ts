@@ -177,7 +177,7 @@ describe("LoginPage", () => {
     expect(requiredNode(root, "button").props.type).toBe("submit");
   });
 
-  it("posts trimmed email and unchanged password, sets the Supabase session, and navigates by default", async () => {
+  it("posts trimmed email, sets the session, and lands on Dashboard by default", async () => {
     apiRequestMock.mockResolvedValue(response(200, tokenBody));
     const root = renderLogin();
     changeInput(root, "email", "  user@example.test  ");
@@ -190,7 +190,7 @@ describe("LoginPage", () => {
       body: { email: "user@example.test", password: " pass word " },
     });
     expect(setSessionMock).toHaveBeenCalledWith(tokenBody);
-    expect(navigateMock).toHaveBeenCalledWith("/access", { replace: true });
+    expect(navigateMock).toHaveBeenCalledWith("/dashboard", { replace: true });
   });
 
   it("returns to a valid protected destination after login", async () => {
@@ -204,13 +204,38 @@ describe("LoginPage", () => {
     expect(navigateMock).toHaveBeenCalledWith("/history?range=week#recent", { replace: true });
   });
 
+  it("preserves an access-history detail destination after login", async () => {
+    const requestId = "123e4567-e89b-12d3-a456-426614174000";
+    locationMock.mockReturnValue({ state: { from: { pathname: `/history/${requestId}` } } });
+    apiRequestMock.mockResolvedValue(response(200, tokenBody));
+
+    await submitHandler(renderLogin())(submitEvent());
+
+    expect(navigateMock).toHaveBeenCalledWith(`/history/${requestId}`, { replace: true });
+  });
+
   it("ignores an external return destination", async () => {
     locationMock.mockReturnValue({ state: { from: { pathname: "//attacker.example" } } });
     apiRequestMock.mockResolvedValue(response(200, tokenBody));
 
     await submitHandler(renderLogin())(submitEvent());
 
-    expect(navigateMock).toHaveBeenCalledWith("/access", { replace: true });
+    expect(navigateMock).toHaveBeenCalledWith("/dashboard", { replace: true });
+  });
+
+  it.each([
+    { pathname: "/dashboard" },
+    { pathname: "/login" },
+    { pathname: "/unsupported" },
+    { pathname: "\\\\attacker.example" },
+    { pathname: "/history/not-an-id" },
+  ])("uses Dashboard for a non-protected or malformed return destination", async (from) => {
+    locationMock.mockReturnValue({ state: { from } });
+    apiRequestMock.mockResolvedValue(response(200, tokenBody));
+
+    await submitHandler(renderLogin())(submitEvent());
+
+    expect(navigateMock).toHaveBeenCalledWith("/dashboard", { replace: true });
   });
 
   it.each([

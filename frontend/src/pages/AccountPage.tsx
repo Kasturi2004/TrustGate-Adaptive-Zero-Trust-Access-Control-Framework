@@ -1,13 +1,15 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import {
   MfaEnrollmentApiError,
   startTotpEnrollment,
   verifyTotpEnrollment,
 } from "../api/mfaEnrollment.ts";
+import { fetchCurrentDeviceRecognition, forgetCurrentDevice } from "../api/deviceRecognition.ts";
 import type { TotpEnrollmentStartResponse } from "../types/mfaEnrollment.ts";
 
 type EnrollmentState = "idle" | "starting" | "configuring" | "verifying" | "complete";
+type DeviceState = "loading" | "recognized" | "unrecognized" | "unavailable" | "forgetting";
 
 function startErrorMessage(error: unknown): string {
   if (error instanceof MfaEnrollmentApiError) {
@@ -46,6 +48,39 @@ export function AccountPage() {
   const [error, setError] = useState<string | null>(null);
   const startInFlight = useRef(false);
   const verifyInFlight = useRef(false);
+  const forgetInFlight = useRef(false);
+  const [deviceState, setDeviceState] = useState<DeviceState>("loading");
+  const [deviceError, setDeviceError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void fetchCurrentDeviceRecognition()
+      .then(({ recognized }) => {
+        if (active) setDeviceState(recognized ? "recognized" : "unrecognized");
+      })
+      .catch(() => {
+        if (active) setDeviceState("unavailable");
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function forgetDevice(): Promise<void> {
+    if (forgetInFlight.current || deviceState !== "recognized") return;
+    forgetInFlight.current = true;
+    setDeviceState("forgetting");
+    setDeviceError(null);
+    try {
+      await forgetCurrentDevice();
+      setDeviceState("unrecognized");
+    } catch {
+      setDeviceState("recognized");
+      setDeviceError("We couldn't update this device preference. Please try again.");
+    } finally {
+      forgetInFlight.current = false;
+    }
+  }
 
   async function beginEnrollment(): Promise<void> {
     if (startInFlight.current || verifyInFlight.current) return;
@@ -106,13 +141,48 @@ export function AccountPage() {
         </div>
       </header>
 
+      <section
+        className="panel account-enrollment-panel"
+        aria-labelledby="device-recognition-title"
+      >
+        <span className="page-eyebrow">Device familiarity</span>
+        <h2 id="device-recognition-title">Current device</h2>
+        <p>
+          Recognition is a familiarity signal for future access decisions. It does not replace
+          signing in or any required verification.
+        </p>
+        {deviceState === "loading" && <p role="status">Checking this device…</p>}
+        {deviceState === "recognized" && (
+          <>
+            <p role="status">This device is recognized for your account.</p>
+            <button
+              className="history-secondary-action account-restart-action"
+              type="button"
+              onClick={() => void forgetDevice()}
+            >
+              Forget this device
+            </button>
+          </>
+        )}
+        {deviceState === "forgetting" && <p role="status">Updating device preference…</p>}
+        {deviceState === "unrecognized" && <p role="status">This device is not recognized.</p>}
+        {deviceState === "unavailable" && (
+          <p role="status">Device recognition status is temporarily unavailable.</p>
+        )}
+        {deviceError && (
+          <p className="login-error" role="alert">
+            {deviceError}
+          </p>
+        )}
+      </section>
+
       {state === "complete" ? (
         <section
           className="panel account-enrollment-panel"
           aria-labelledby="enrollment-success-title"
         >
           <span className="page-eyebrow">Setup complete</span>
-          <h2 id="enrollment-success-title">Authenticator enrolled successfully.</h2>
+          <h2 id="enrollment-success-title">Authenticator set up successfully.</h2>
           <p>
             Your authenticator can now be used when an access request requires additional
             verification.

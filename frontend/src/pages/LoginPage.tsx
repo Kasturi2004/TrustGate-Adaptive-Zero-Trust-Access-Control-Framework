@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { apiRequest } from "../api/client.ts";
 import { AuthPageLayout } from "../components/AuthPageLayout.tsx";
 import { supabase } from "../lib/supabase.ts";
+import { safeReturnPath } from "../auth/returnPath.ts";
 
 interface TokenResponse {
   access_token: string;
@@ -26,30 +27,6 @@ function parseTokenResponse(value: unknown): TokenResponse | null {
   }
 
   return { access_token, refresh_token };
-}
-
-function returnPath(locationState: unknown): string | null {
-  if (typeof locationState !== "object" || locationState === null || !("from" in locationState)) {
-    return null;
-  }
-  const destination = locationState.from;
-  if (typeof destination !== "object" || destination === null || !("pathname" in destination)) {
-    return null;
-  }
-
-  const { pathname, search, hash } = destination as Record<string, unknown>;
-  if (
-    typeof pathname !== "string" ||
-    !pathname.startsWith("/") ||
-    pathname.startsWith("//") ||
-    pathname.includes("\\")
-  ) {
-    return null;
-  }
-
-  const safeSearch = typeof search === "string" && search.startsWith("?") ? search : "";
-  const safeHash = typeof hash === "string" && hash.startsWith("#") ? hash : "";
-  return `${pathname}${safeSearch}${safeHash}`;
 }
 
 function loginError(status: number): string {
@@ -107,7 +84,7 @@ export function LoginPage() {
         return;
       }
 
-      navigate(returnPath(location.state) ?? "/access", { replace: true });
+      navigate(safeReturnPath(location.state) ?? "/dashboard", { replace: true });
     } catch {
       setError("Unable to sign in right now. Please try again.");
     } finally {

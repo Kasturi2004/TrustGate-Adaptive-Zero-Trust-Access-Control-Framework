@@ -87,7 +87,6 @@ def test_trust_evaluation_persists_with_exactly_four_linked_decimal_factors(
             result=_RESULT,
             access_request_id=access_request.id,
             policy_version_id=policy_id,
-            risk_classification="MEDIUM",
             evaluated_at=_NOW,
         )
 
@@ -169,7 +168,6 @@ def test_factor_insert_failure_rolls_back_evaluation_and_all_factors(
                 result=invalid_result,
                 access_request_id=access_request.id,
                 policy_version_id=policy_id,
-                risk_classification="MEDIUM",
                 evaluated_at=_NOW,
             )
 

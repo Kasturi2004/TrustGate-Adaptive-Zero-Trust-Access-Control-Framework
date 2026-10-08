@@ -1,14 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { hookHarness, startEnrollmentMock, verifyEnrollmentMock } = vi.hoisted(() => ({
+const {
+  hookHarness,
+  startEnrollmentMock,
+  verifyEnrollmentMock,
+  fetchDeviceRecognitionMock,
+  forgetDeviceMock,
+} = vi.hoisted(() => ({
   hookHarness: {
     states: [] as unknown[],
     cursor: 0,
     refs: [] as Array<{ current: unknown }>,
     refCursor: 0,
+    effect: null as (() => unknown) | null,
   },
   startEnrollmentMock: vi.fn(),
   verifyEnrollmentMock: vi.fn(),
+  fetchDeviceRecognitionMock: vi.fn(),
+  forgetDeviceMock: vi.fn(),
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -25,6 +34,9 @@ vi.mock("react", async (importOriginal) => {
       if (!(index in hookHarness.refs)) hookHarness.refs[index] = { current: initialValue };
       return hookHarness.refs[index];
     },
+    useEffect: (effect: () => unknown) => {
+      hookHarness.effect = effect;
+    },
   } as unknown as typeof actual;
 });
 
@@ -39,6 +51,10 @@ vi.mock("../api/mfaEnrollment.ts", () => ({
   },
   startTotpEnrollment: startEnrollmentMock,
   verifyTotpEnrollment: verifyEnrollmentMock,
+}));
+vi.mock("../api/deviceRecognition.ts", () => ({
+  fetchCurrentDeviceRecognition: fetchDeviceRecognitionMock,
+  forgetCurrentDevice: forgetDeviceMock,
 }));
 
 import { ProtectedRoute } from "../auth/ProtectedRoute.tsx";
@@ -102,8 +118,11 @@ beforeEach(() => {
   hookHarness.cursor = 0;
   hookHarness.refs = [];
   hookHarness.refCursor = 0;
+  hookHarness.effect = null;
   startEnrollmentMock.mockReset();
   verifyEnrollmentMock.mockReset();
+  fetchDeviceRecognitionMock.mockReset();
+  forgetDeviceMock.mockReset();
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -161,7 +180,7 @@ describe("AccountPage authenticator enrollment", () => {
 
     const success = renderPage();
     expect(verifyEnrollmentMock).toHaveBeenCalledWith("012345");
-    expect(nodeText(success)).toContain("Authenticator enrolled successfully.");
+    expect(nodeText(success)).toContain("Authenticator set up successfully.");
     expect(nodeText(success)).toContain("additional verification");
     expect(nodeText(success)).not.toContain("PRIVATE-MANUAL-KEY");
     expect(hookHarness.states[1]).toBeNull();
@@ -221,5 +240,42 @@ describe("AccountPage authenticator enrollment", () => {
     expect(buttonWithText(renderPage(), "Preparing setup").props.disabled).toBe(true);
     resolveStart(setupMaterial);
     await pending;
+  });
+});
+
+describe("AccountPage device recognition", () => {
+  it("shows a safe current-device status and supports forgetting recognition", async () => {
+    fetchDeviceRecognitionMock.mockResolvedValue({ recognized: true });
+    forgetDeviceMock.mockResolvedValue({ recognized: false });
+    renderPage();
+    const cleanup = hookHarness.effect?.() as (() => void) | undefined;
+    await vi.waitFor(() => expect(hookHarness.states[4]).toBe("recognized"));
+
+    let page = renderPage();
+    expect(nodeText(page)).toContain("This device is recognized for your account.");
+    expect(nodeText(page)).toContain("Recognition is a familiarity signal");
+    expect(nodeText(page)).not.toContain("device_hash");
+    expect(nodeText(page)).not.toContain("device-id");
+    const forget = buttonWithText(page, "Forget this device");
+    await (forget.props.onClick as () => Promise<void>)();
+
+    page = renderPage();
+    expect(forgetDeviceMock).toHaveBeenCalledOnce();
+    expect(nodeText(page)).toContain("This device is not recognized.");
+    cleanup?.();
+  });
+
+  it("renders an unrecognized state and hides revocation when status is false", async () => {
+    fetchDeviceRecognitionMock.mockResolvedValue({ recognized: false });
+    renderPage();
+    const cleanup = hookHarness.effect?.() as (() => void) | undefined;
+    await vi.waitFor(() => expect(hookHarness.states[4]).toBe("unrecognized"));
+
+    const page = renderPage();
+    expect(nodeText(page)).toContain("This device is not recognized.");
+    expect(findNode(page, (candidate) => nodeText(candidate).includes("Forget this device"))).toBe(
+      undefined,
+    );
+    cleanup?.();
   });
 });

@@ -69,7 +69,7 @@ def _client(
     user_id: UUID = _USER_ID,
 ) -> TestClient:
     settings = _settings()
-    principal = AuthenticatedPrincipal(user_id, "user@example.test", "USER")
+    principal = AuthenticatedPrincipal(user_id, "user@example.test", "USER", UUID(int=1))
     monkeypatch.setattr(mfa_secrets, "get_settings", lambda: settings)
     monkeypatch.setattr(rate_limit_module, "get_settings", lambda: settings)
     monkeypatch.setattr(client_ip_module, "get_settings", lambda: settings)

@@ -118,6 +118,35 @@ const eventPage = {
   page_size: 20,
 };
 
+const recentActivityPage = {
+  items: [
+    eventPage.items[0],
+    {
+      id: "event-mfa-failed",
+      event_type: "MFA_TOTP_STEP_UP_VERIFICATION_FAILED",
+      created_at: "2026-10-01T11:59:00Z",
+      user_id: "user-2",
+      decision: "STEP_UP",
+      risk_category: "MEDIUM",
+      trust_score: 55,
+      device: null,
+    },
+    {
+      id: "event-login-success",
+      event_type: "LOGIN_SUCCESS",
+      created_at: "2026-10-01T11:58:00Z",
+      user_id: "user-3",
+      decision: null,
+      risk_category: null,
+      trust_score: null,
+      device: null,
+    },
+  ],
+  total: 3,
+  page: 1,
+  page_size: 50,
+};
+
 const investigation = {
   event: {
     id: "event-1",
@@ -291,6 +320,7 @@ afterEach(() => {
 describe("admin dashboard", () => {
   it("shows loading, successful backend data, and matching event-filter navigation", async () => {
     dashboardMock.mockResolvedValue(dashboard);
+    eventsMock.mockResolvedValue(recentActivityPage);
     const loading = render(AdminDashboardPage);
     expect(textContent(loading).join(" ")).toContain("Loading dashboard metrics");
     await settle();
@@ -300,7 +330,25 @@ describe("admin dashboard", () => {
     expect(text).toContain("67.50");
     expect(text).toContain("75.0%");
     expect(text).toContain("Recent suspicious activity");
-    expect(text).toContain("not included in the current dashboard API response");
+    expect(text).toContain("ACCESS_REQUEST_SUBMITTED");
+    expect(text).toContain("MFA_TOTP_STEP_UP_VERIFICATION_FAILED");
+    expect(text).toContain("Showing up to five matches from the 50 most recent events");
+    expect(text).toMatch(/Event ID:\s+event-1/);
+    expect(text).toMatch(/Event ID:\s+event-mfa-failed/);
+    expect(text).not.toContain("event-login-success");
+    expect(text).toContain("HIGH-risk events");
+    expect(text).toContain("BLOCK");
+    expect(text).toContain("STEP-UP");
+    expect(findNode(page, (node) => node.props.to === "/admin/events/event-1")).toBeDefined();
+    expect(eventsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        from: expect.stringMatching(/T00:00:00Z$/),
+        to: expect.stringMatching(/T23:59:59\.999Z$/),
+        page: 1,
+        page_size: 50,
+      }),
+      expect.any(AbortSignal),
+    );
     expect(text).toContain("Repeated failed access attempts");
     expect(text).toContain("Recent blocks");
     expect(text).toContain("Current count 4");
@@ -315,6 +363,8 @@ describe("admin dashboard", () => {
     expect(text).toContain("initial decision");
     expect(text).toContain("different final outcome");
     expect(text).toContain("MFA success rate");
+    expect(text).toContain("View events in this date range");
+    expect(text).not.toContain("View matching events");
     expect(dashboardMock).toHaveBeenCalledWith(
       expect.stringMatching(/T00:00:00Z$/),
       expect.stringMatching(/T23:59:59\.999Z$/),
@@ -339,6 +389,7 @@ describe("admin dashboard", () => {
 
   it("shows an API error without exposing its response details", async () => {
     dashboardMock.mockRejectedValue(new Error("secret backend payload"));
+    eventsMock.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 });
     render(AdminDashboardPage);
     await settle();
     const page = render(AdminDashboardPage);
@@ -348,11 +399,51 @@ describe("admin dashboard", () => {
 
   it("shows an empty-period message from zero backend requests", async () => {
     dashboardMock.mockResolvedValue({ ...dashboard, total_requests: 0 });
+    eventsMock.mockResolvedValue({ items: [], total: 0, page: 1, page_size: 50 });
     render(AdminDashboardPage);
     await settle();
     expect(textContent(render(AdminDashboardPage)).join(" ")).toContain(
       "No access requests were recorded in this date range.",
     );
+  });
+
+  it("shows an honest activity empty state when the recent event page has no matches", async () => {
+    dashboardMock.mockResolvedValue(dashboard);
+    eventsMock.mockResolvedValue({
+      items: [recentActivityPage.items[2]],
+      total: 1,
+      page: 1,
+      page_size: 50,
+    });
+
+    render(AdminDashboardPage);
+    await settle();
+    const text = textContent(render(AdminDashboardPage)).join(" ");
+
+    expect(text).toContain(
+      "No matching events were found among the 50 most recent security events in this date range.",
+    );
+    expect(text).not.toContain("event-login-success");
+  });
+
+  it("shows a safe activity error without hiding the dashboard metrics", async () => {
+    dashboardMock.mockResolvedValue(dashboard);
+    eventsMock.mockRejectedValue(new Error("private backend exception"));
+
+    render(AdminDashboardPage);
+    await settle();
+    const text = textContent(render(AdminDashboardPage)).join(" ");
+
+    expect(text).toContain("12");
+    expect(text).toContain("Unable to load recent activity");
+    expect(text).toContain("temporarily unavailable");
+    expect(text).not.toContain("private backend exception");
+    expect(
+      findNode(
+        render(AdminDashboardPage),
+        (node) => textContent(node.props.children).join("") === "Try again",
+      ),
+    ).toBeDefined();
   });
 
   it("labels normalized indicator progress accessibly without adding keyboard traps", () => {

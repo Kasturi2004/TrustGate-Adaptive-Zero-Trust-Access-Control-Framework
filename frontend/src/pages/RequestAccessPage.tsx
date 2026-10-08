@@ -1,6 +1,8 @@
 import { useRef, useState, type FormEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiRequest } from "../api/client.ts";
 import { DecisionPresentation } from "../components/DecisionPresentation.tsx";
+import { getDeviceIdentifier } from "../lib/deviceIdentity.ts";
 import { isAccessEvaluationResponse, type AccessEvaluationResponse } from "../types/access.ts";
 
 const RESOURCE_ID = "ops-dashboard";
@@ -22,6 +24,7 @@ function isSuccessfulTotpVerification(value: unknown): boolean {
 }
 
 export function RequestAccessPage() {
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [evaluation, setEvaluation] = useState<AccessEvaluationResponse | null>(null);
@@ -62,6 +65,9 @@ export function RequestAccessPage() {
       if (!isSuccessfulTotpVerification(body)) throw new Error("MFA response was invalid");
 
       setTotpVerified(true);
+      if (evaluation.access_request_id) {
+        navigate("/operations", { state: { accessRequestId: evaluation.access_request_id } });
+      }
     } catch {
       setTotpError(MFA_SAFE_ERROR);
     } finally {
@@ -81,8 +87,7 @@ export function RequestAccessPage() {
     setTotpVerified(false);
 
     try {
-      // Phase 5 demo token only; Phase 6 will supply the real device identity.
-      const deviceToken = `phase5-demo-${crypto.randomUUID()}`;
+      const deviceToken = getDeviceIdentifier();
       const response = await apiRequest("/access/evaluate", {
         method: "POST",
         body: { resource_id: RESOURCE_ID },
@@ -112,7 +117,7 @@ export function RequestAccessPage() {
         <div>
           <span className="page-eyebrow">Access gateway</span>
           <h1 id="access-request-title">Request access to Operations Dashboard</h1>
-          <p>TrustGate will evaluate your request before access is granted.</p>
+          <p>Your request will be checked before access is granted.</p>
         </div>
       </header>
       <div className="request-layout">
@@ -136,12 +141,9 @@ export function RequestAccessPage() {
               ◆
             </span>
           </div>
-          <p className="access-resource-id">
-            Resource ID <code>{RESOURCE_ID}</code>
-          </p>
           <div className="request-safety-note">
             <span aria-hidden="true">◇</span>
-            <p>The backend evaluates the request and returns the access decision.</p>
+            <p>TrustGate checks each request before allowing access.</p>
           </div>
           <button
             className="login-submit access-request-button"
@@ -171,15 +173,18 @@ export function RequestAccessPage() {
                 setTotpError(null);
               }}
               onTotpSubmit={submitTotpCode}
+              onOpenDashboard={() => {
+                navigate("/operations", {
+                  state: { accessRequestId: evaluation.access_request_id },
+                });
+              }}
             />
           )}
         </section>
         <aside className="request-explanation">
           <span className="page-eyebrow">How it works</span>
           <h2>Authentication is only the first check.</h2>
-          <p>
-            Each request is evaluated by TrustGate before the protected resource can be accessed.
-          </p>
+          <p>TrustGate checks each request before access to the protected area is granted.</p>
           <ol>
             <li>
               <span>1</span>
@@ -191,8 +196,8 @@ export function RequestAccessPage() {
             <li>
               <span>2</span>
               <div>
-                <strong>Backend evaluation</strong>
-                <small>The backend determines the authorization decision.</small>
+                <strong>Request check</strong>
+                <small>TrustGate checks whether access can be granted.</small>
               </div>
             </li>
             <li>

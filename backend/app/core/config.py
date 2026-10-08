@@ -1,8 +1,7 @@
 """Typed environment configuration.
 
-Phase 1 requires only the settings needed to boot the API. Later-phase
-secrets are optional until the phase that reads them, so local setup does
-not invent placeholder credentials.
+API startup settings remain separate from feature-specific settings.
+DEVICE_HASH_SECRET is required when access/device context hashes a device token.
 """
 
 from functools import lru_cache

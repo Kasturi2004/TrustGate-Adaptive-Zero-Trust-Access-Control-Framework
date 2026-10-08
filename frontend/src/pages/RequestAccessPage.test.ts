@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 
-const { hookHarness, apiRequestMock, uuidMock } = vi.hoisted(() => ({
+const { hookHarness, apiRequestMock, uuidMock, navigateMock } = vi.hoisted(() => ({
   hookHarness: {
     states: [] as unknown[],
     cursor: 0,
@@ -10,6 +10,7 @@ const { hookHarness, apiRequestMock, uuidMock } = vi.hoisted(() => ({
   },
   apiRequestMock: vi.fn(),
   uuidMock: vi.fn(),
+  navigateMock: vi.fn(),
 }));
 
 vi.mock("react", async (importOriginal) => {
@@ -41,6 +42,10 @@ vi.mock("react", async (importOriginal) => {
 });
 
 vi.mock("../api/client.ts", () => ({ apiRequest: apiRequestMock }));
+vi.mock("react-router-dom", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-router-dom")>()),
+  useNavigate: () => navigateMock,
+}));
 
 import { Link, Route } from "react-router-dom";
 import { ProtectedRoute } from "../auth/ProtectedRoute.tsx";
@@ -55,9 +60,11 @@ interface UiNode {
   props: Record<string, unknown>;
 }
 
-const DEVICE_TOKEN = "phase5-demo-test-uuid";
+const DEVICE_TOKEN = "device-id-test-uuid";
 const MFA_CHALLENGE_ID = "9a535c87-0d62-4a3e-a090-e8862392224a";
 const PRIVATE_ERROR = "secret-token private stack trace";
+const DEVICE_IDENTIFIER_STORAGE_KEY = "trustgate.device-identifier.v1";
+let storedDeviceIdentifiers: Map<string, string>;
 
 function renderPage(): UiNode {
   hookHarness.cursor = 0;
@@ -145,6 +152,7 @@ function responseFor(
   return new Response(
     JSON.stringify({
       evaluation_id: "evaluation-test-id",
+      access_request_id: "f7d3a970-46ad-4936-84dc-fb3caf4db218",
       decision,
       explanation:
         decision === "ALLOW"
@@ -162,6 +170,9 @@ function responseFor(
       raw_context_signals: {
         device_token: "private-device-token",
         user_agent: "private-user-agent",
+        ip_address: "private-ip-address",
+        location: "private-location",
+        device_details: "private-device-details",
       },
       factor_calculations: { identity: 0.95 },
       ...overrides,
@@ -177,6 +188,14 @@ beforeEach(() => {
   hookHarness.refCursor = 0;
   apiRequestMock.mockReset();
   uuidMock.mockReset().mockReturnValue(DEVICE_TOKEN);
+  navigateMock.mockReset();
+  storedDeviceIdentifiers = new Map();
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn((key: string) => storedDeviceIdentifiers.get(key) ?? null),
+    setItem: vi.fn((key: string, value: string) => storedDeviceIdentifiers.set(key, String(value))),
+    removeItem: vi.fn((key: string) => storedDeviceIdentifiers.delete(key)),
+    clear: vi.fn(() => storedDeviceIdentifiers.clear()),
+  });
   vi.stubGlobal("crypto", { randomUUID: uuidMock });
 });
 
@@ -198,7 +217,7 @@ describe("RequestAccessPage", () => {
       findNode(page, (candidate) => candidate.props.className === "request-layout"),
     ).toBeDefined();
     expect(nodeText(page)).toContain("Operations Dashboard");
-    expect(nodeText(page)).toContain("ops-dashboard");
+    expect(nodeText(page)).not.toContain("ops-dashboard");
     expect(nodeText(page)).toContain("Request access to Operations Dashboard");
     expect(nodeText(page)).not.toContain("Choose a resource");
     expect(nodeText(page)).toContain("Request Access");
@@ -212,7 +231,7 @@ describe("RequestAccessPage", () => {
     expect(requestPage?.type).toBe(RequestAccessPage);
   });
 
-  it("posts the resource ID and demo device token through the authenticated API client", async () => {
+  it("posts the resource ID and stable device identifier through the authenticated API client", async () => {
     apiRequestMock.mockResolvedValue(responseFor("BLOCK"));
 
     await clickRequest(renderPage());
@@ -222,7 +241,27 @@ describe("RequestAccessPage", () => {
     expect(path).toBe("/access/evaluate");
     expect(options.method).toBe("POST");
     expect(options.body).toEqual({ resource_id: "ops-dashboard" });
-    expect(options.headers).toEqual({ "X-Device-Token": `phase5-demo-${DEVICE_TOKEN}` });
+    expect(options.headers).toEqual({ "X-Device-Token": DEVICE_TOKEN });
+    expect(localStorage.getItem(DEVICE_IDENTIFIER_STORAGE_KEY)).toBe(DEVICE_TOKEN);
+    expect(uuidMock).toHaveBeenCalledOnce();
+    expect(nodeText(renderPage())).not.toContain(DEVICE_TOKEN);
+  });
+
+  it("reuses the same identifier across Request Access requests without putting it in the URL", async () => {
+    apiRequestMock.mockResolvedValue(responseFor("BLOCK"));
+
+    await clickRequest(renderPage());
+    await clickRequest(renderPage());
+
+    const accessCalls = apiRequestMock.mock.calls.filter(([path]) => path === "/access/evaluate");
+    expect(accessCalls).toHaveLength(2);
+    for (const [path, options] of accessCalls as [string, ApiRequestOptions][]) {
+      expect(path).toBe("/access/evaluate");
+      expect(path).not.toContain(DEVICE_TOKEN);
+      expect(path).not.toContain("?");
+      expect(options.body).toEqual({ resource_id: "ops-dashboard" });
+      expect(options.headers).toEqual({ "X-Device-Token": DEVICE_TOKEN });
+    }
     expect(uuidMock).toHaveBeenCalledOnce();
     expect(nodeText(renderPage())).not.toContain(DEVICE_TOKEN);
   });
@@ -243,7 +282,7 @@ describe("RequestAccessPage", () => {
     [
       "BLOCK",
       "Access denied",
-      "Access to Operations Dashboard was denied based on the current security assessment.",
+      "TrustGate could not approve this access request at this time.",
       "decision-block",
     ],
   ] as const)(
@@ -259,6 +298,7 @@ describe("RequestAccessPage", () => {
 
       const result = renderPage();
       expect(nodeText(result)).toContain(label);
+      expect(nodeText(result)).not.toMatch(/\bALLOW\b|\bSTEP-UP\b|\bBLOCK\b|\bMFA\b|\bOTP\b/);
       expect(nodeText(result)).toContain(description);
       if (decision === "ALLOW") {
         expect(nodeText(result)).toContain(
@@ -272,13 +312,27 @@ describe("RequestAccessPage", () => {
       }
       if (decision === "BLOCK") {
         expect(nodeText(result)).toContain(
-          "Access to Operations Dashboard was denied based on the current security assessment.",
+          "TrustGate could not approve this access request at this time.",
+        );
+        expect(nodeText(result)).toContain(
+          "If you need access, contact your organization’s TrustGate administrator.",
         );
         expect(nodeText(result)).not.toContain("private-decision-reason");
         expect(nodeText(result)).not.toContain("private-exception-details");
+        expect(nodeText(result)).not.toContain("private-ip-address");
+        expect(nodeText(result)).not.toContain("private-location");
+        expect(nodeText(result)).not.toContain("private-device-details");
+        expect(nodeText(result)).not.toContain(PRIVATE_ERROR);
         expect(findNode(result, (candidate) => candidate.type === Link)?.props.to).toBe(
           "/dashboard",
         );
+        expect(nodeText(result)).not.toContain("Open Operations Dashboard");
+        const actions = findNode(
+          result,
+          (candidate) => candidate.props.className === "decision-actions",
+        );
+        expect(nodeText(actions)).not.toMatch(/try again|retry|request access/i);
+        expect(findNode(actions, (candidate) => candidate.type === "button")).toBeUndefined();
       }
       expect(nodeText(result)).not.toContain("private-decision-reason");
       const presentation = findNode(result, (candidate) =>
@@ -291,7 +345,8 @@ describe("RequestAccessPage", () => {
         expect(findNode(result, (candidate) => candidate.type === "input")).toBeUndefined();
       }
       if (decision === "STEP_UP") {
-        expect(nodeText(result)).toContain("Verify with your authenticator");
+        expect(nodeText(result)).toContain("Additional verification required");
+        expect(nodeText(result)).toContain("Verify with your Authenticator app");
         expect(nodeText(result)).not.toContain(MFA_CHALLENGE_ID);
       }
       expect(nodeText(result)).not.toMatch(
@@ -299,6 +354,47 @@ describe("RequestAccessPage", () => {
       );
     },
   );
+
+  it("navigates from ALLOW with its request ID and leaves authorization to resource redemption", async () => {
+    apiRequestMock.mockResolvedValue(responseFor("ALLOW"));
+
+    await clickRequest(renderPage());
+
+    const page = renderPage();
+    expect(nodeText(page)).toContain("Access granted");
+    const openAction = findNode(
+      page,
+      (candidate) =>
+        candidate.type === "button" && nodeText(candidate) === "Open Operations Dashboard",
+    );
+    expect(openAction).toBeDefined();
+    (openAction?.props.onClick as () => void)();
+
+    expect(navigateMock).toHaveBeenCalledWith("/operations", {
+      state: { accessRequestId: "f7d3a970-46ad-4936-84dc-fb3caf4db218" },
+    });
+    // This page only evaluates and navigates. The resource endpoint is called by
+    // OperationsDashboardPage, where the server makes the authorization decision.
+    expect(apiRequestMock.mock.calls.map(([path]) => path)).toEqual(["/access/evaluate"]);
+  });
+
+  it("sends an ALLOW result with a missing request ID to the normal server denial path", async () => {
+    apiRequestMock.mockResolvedValue(responseFor("ALLOW", { access_request_id: null }));
+
+    await clickRequest(renderPage());
+    const page = renderPage();
+    const openAction = findNode(
+      page,
+      (candidate) =>
+        candidate.type === "button" && nodeText(candidate) === "Open Operations Dashboard",
+    );
+    (openAction?.props.onClick as () => void)();
+
+    expect(navigateMock).toHaveBeenCalledWith("/operations", {
+      state: { accessRequestId: null },
+    });
+    expect(apiRequestMock.mock.calls.map(([path]) => path)).toEqual(["/access/evaluate"]);
+  });
 
   it("renders a labeled six-digit text input for STEP_UP with a challenge ID", async () => {
     apiRequestMock.mockResolvedValue(
@@ -373,7 +469,7 @@ describe("RequestAccessPage", () => {
     await submitTotp(renderPage());
 
     const page = renderPage();
-    expect(nodeText(page)).toContain("Access Granted");
+    expect(nodeText(page)).toContain("Access granted");
     expect(nodeText(page)).toContain(
       "Your authenticator was verified and access has been approved.",
     );
@@ -388,9 +484,12 @@ describe("RequestAccessPage", () => {
       code: "012345",
     });
     expect(String(apiRequestMock.mock.calls[1]?.[0])).not.toContain(MFA_CHALLENGE_ID);
-    expect(nodeText(page)).toContain("AUTHENTICATOR VERIFIED");
+    expect(nodeText(page)).toContain("Authenticator verified");
     expect(nodeText(page)).not.toContain(MFA_CHALLENGE_ID);
     expect(nodeText(page)).not.toContain("evaluation-test-id");
+    expect(navigateMock).toHaveBeenCalledWith("/operations", {
+      state: { accessRequestId: "f7d3a970-46ad-4936-84dc-fb3caf4db218" },
+    });
     expect(hookHarness.states[2]).toMatchObject({ decision: "STEP_UP" });
     expect(apiRequestMock.mock.calls.filter(([path]) => path === "/access/evaluate")).toHaveLength(
       1,
@@ -509,7 +608,7 @@ describe("RequestAccessPage", () => {
     await clickRequest(renderPage());
     enterTotpCode(renderPage(), "123456");
     await submitTotp(renderPage());
-    expect(nodeText(renderPage())).toContain("Access Granted");
+    expect(nodeText(renderPage())).toContain("Access granted");
 
     await clickRequest(renderPage());
 

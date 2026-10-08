@@ -369,6 +369,7 @@ async def verify_totp_step_up(
         resolved_request = await AccessRequestRepository(session).resolve_step_up(
             challenge.access_request_id,
             principal.id,
+            principal.session_id,
             now,
         )
         if resolved_request is None:

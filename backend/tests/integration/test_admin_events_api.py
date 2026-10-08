@@ -213,6 +213,7 @@ def _token(user_id: UUID, *, role_claim: str = "USER") -> str:
     return jwt.encode(
         {
             "sub": str(user_id),
+            "session_id": str(user_id),
             "role": role_claim,
             "aud": "authenticated",
             "iss": f"{_SUPABASE_URL}/auth/v1",

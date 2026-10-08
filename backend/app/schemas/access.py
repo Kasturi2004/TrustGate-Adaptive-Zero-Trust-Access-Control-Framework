@@ -23,3 +23,19 @@ class AccessEvaluateResponse(BaseModel):
     decision: AccessDecision
     explanation: str
     mfa_challenge_id: UUID | None
+    access_request_id: UUID | None
+
+
+class ProtectedResourceRequest(BaseModel):
+    """Select an access request to redeem; authorization is checked server-side."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    access_request_id: UUID
+
+
+class ProtectedDashboardResponse(BaseModel):
+    resource_id: Literal["ops-dashboard"]
+    title: str
+    summary: str
+    status: Literal["operational"]

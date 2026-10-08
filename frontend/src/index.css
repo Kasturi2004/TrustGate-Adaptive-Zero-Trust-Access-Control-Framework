@@ -2180,6 +2180,15 @@ a.admin-metric-card:hover {
   color: #91a1ae;
 }
 
+.admin-recent-activity-meta {
+  display: block;
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
+  color: #91a1ae;
+  font-size: 0.65rem;
+  font-weight: 400;
+}
+
 @media (max-width: 900px) {
   .admin-filter-form {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2358,5 +2367,145 @@ a.admin-metric-card:hover {
   .account-primary-action {
     width: 100%;
     justify-content: center;
+  }
+}
+
+.operations-page {
+  display: grid;
+  gap: clamp(1.5rem, 3vw, 2.5rem);
+}
+
+.operations-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  padding: clamp(1.5rem, 3vw, 2.5rem);
+  border-left: 4px solid var(--success);
+}
+
+.operations-hero h1 {
+  margin: 0 0 0.45rem;
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  letter-spacing: -0.035em;
+}
+
+.operations-hero p,
+.operations-summary-card p,
+.operations-status-card p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.operations-access-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid #b8dbc7;
+  border-radius: 999px;
+  background: #eff8f2;
+  color: #17623c;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.operations-access-badge span {
+  font-size: 1rem;
+}
+
+.operations-overview .section-heading {
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.operations-overview .section-heading h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: -0.02em;
+}
+
+.operations-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(14rem, 1fr);
+  gap: 1rem;
+}
+
+.operations-summary-card,
+.operations-status-card {
+  min-height: 9rem;
+  padding: 1.25rem;
+}
+
+.operations-card-label {
+  display: block;
+  margin-bottom: 0.75rem;
+  color: var(--text-tertiary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.operations-status-card strong {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  font-size: 1.15rem;
+}
+
+.operations-status-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.operations-state {
+  max-width: 46rem;
+  margin: 2rem auto;
+  padding: clamp(1.5rem, 3vw, 2.5rem);
+}
+
+.operations-state h1 {
+  margin: 0 0 0.5rem;
+}
+
+.operations-state p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.operations-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+@media (max-width: 700px) {
+  .operations-hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .operations-overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 600px) {
+  .operations-overview .section-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .operations-actions > * {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
   }
 }

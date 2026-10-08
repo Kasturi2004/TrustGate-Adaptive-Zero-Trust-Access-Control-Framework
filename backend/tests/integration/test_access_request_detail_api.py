@@ -190,6 +190,7 @@ def _token(user_id: UUID) -> str:
     return jwt.encode(
         {
             "sub": str(user_id),
+            "session_id": str(user_id),
             "aud": "authenticated",
             "iss": f"{_SUPABASE_URL}/auth/v1",
             "exp": int(datetime.now(UTC).timestamp()) + 3600,
@@ -229,6 +230,7 @@ def test_access_request_detail_returns_only_owned_curated_fields(
     assert response.status_code == 200
     body = response.json()
     assert set(body) == _ALLOWED_FIELDS
+    assert "auth_session_id" not in body
     assert body["id"] == str(seeded_detail.access_request_id)
     assert body["resource_id"] == "ops-dashboard"
     assert body["initial_decision"] == "STEP_UP"

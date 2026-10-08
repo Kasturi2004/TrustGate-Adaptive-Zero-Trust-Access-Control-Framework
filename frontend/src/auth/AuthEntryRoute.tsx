@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "./AuthProvider.tsx";
+import { safeReturnPath } from "./returnPath.ts";
 
 interface AuthEntryRouteProps {
   children: ReactNode;
@@ -8,6 +9,7 @@ interface AuthEntryRouteProps {
 
 export function AuthEntryRoute({ children }: AuthEntryRouteProps) {
   const { session, user, loading } = useAuth();
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -18,7 +20,7 @@ export function AuthEntryRoute({ children }: AuthEntryRouteProps) {
   }
 
   if (session && user) {
-    return <Navigate to="/access" replace />;
+    return <Navigate to={safeReturnPath(location.state) ?? "/dashboard"} replace />;
   }
 
   return children;

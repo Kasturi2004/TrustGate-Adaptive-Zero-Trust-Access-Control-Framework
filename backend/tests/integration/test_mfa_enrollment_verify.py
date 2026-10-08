@@ -2,7 +2,7 @@
 
 import base64
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pyotp
 import pytest
@@ -90,7 +90,7 @@ def test_enrollment_verification_transition_persists_in_postgresql(
             ),
             http_request=_request(),
             response=Response(),
-            principal=AuthenticatedPrincipal(user_id, "user@example.test", "USER"),
+            principal=AuthenticatedPrincipal(user_id, "user@example.test", "USER", UUID(int=1)),
             session=session,
             clock=FixedClock(_VERIFIED_AT),
         )
@@ -164,7 +164,7 @@ def test_verification_failure_rolls_back_postgresql_state_transition(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "user@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "user@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_VERIFIED_AT),
             )

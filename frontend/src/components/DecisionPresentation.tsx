@@ -10,6 +10,7 @@ type DecisionPresentationProps = {
   totpVerified: boolean;
   onTotpCodeChange: (code: string) => void;
   onTotpSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  onOpenDashboard: () => void;
 };
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -18,22 +19,21 @@ const decisionContent = {
   ALLOW: {
     title: "Access granted",
     description: "Access to Operations Dashboard was granted immediately.",
-    label: "ALLOW",
+    label: "Access granted",
     tone: "allow",
     icon: "✓",
   },
   STEP_UP: {
     title: "Additional verification required",
     description: "Verify with your Authenticator app before access can be granted.",
-    label: "STEP-UP",
+    label: "Additional verification required",
     tone: "step",
     icon: "···",
   },
   BLOCK: {
     title: "Access denied",
-    description:
-      "Access to Operations Dashboard was denied based on the current security assessment.",
-    label: "BLOCK",
+    description: "TrustGate could not approve this access request at this time.",
+    label: "Access denied",
     tone: "block",
     icon: "×",
   },
@@ -47,6 +47,7 @@ export function DecisionPresentation({
   totpVerified,
   onTotpCodeChange,
   onTotpSubmit,
+  onOpenDashboard,
 }: DecisionPresentationProps) {
   const content = decisionContent[evaluation.decision];
   const hasChallenge =
@@ -67,15 +68,15 @@ export function DecisionPresentation({
           </span>
           <span className="decision-badge">
             <span className="decision-dot" aria-hidden="true" />
-            AUTHENTICATOR VERIFIED
+            Authenticator verified
           </span>
-          <h2 id="decision-title">Access Granted</h2>
+          <h2 id="decision-title">Access granted</h2>
           <p>Your authenticator was verified and access has been approved.</p>
         </div>
         <div className="decision-actions">
-          <Link className="decision-secondary" to="/dashboard">
-            Back to dashboard
-          </Link>
+          <button className="decision-primary" type="button" onClick={onOpenDashboard}>
+            Open Operations Dashboard
+          </button>
         </div>
       </section>
     );
@@ -97,12 +98,20 @@ export function DecisionPresentation({
         </span>
         <h2 id="decision-title">{content.title}</h2>
         <p>{content.description}</p>
+        {evaluation.decision === "BLOCK" && (
+          <p>If you need access, contact your organization’s TrustGate administrator.</p>
+        )}
       </div>
 
       <div className="decision-actions">
+        {evaluation.decision === "ALLOW" && (
+          <button className="decision-primary" type="button" onClick={onOpenDashboard}>
+            Open Operations Dashboard
+          </button>
+        )}
         {hasChallenge && (
           <form className="totp-verification-form" onSubmit={onTotpSubmit}>
-            <h3>Verify with your authenticator</h3>
+            <h3>Additional verification required</h3>
             <p id="totp-code-help">
               Enter the six-digit code from your authenticator app to continue.
             </p>

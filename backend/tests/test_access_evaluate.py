@@ -1,6 +1,5 @@
 """Tests for the initial fail-closed protected-resource endpoint."""
 
-from asyncio import run
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -29,14 +28,13 @@ from app.services.access_gateway import (
     CompletePipelineResult,
     ContextResult,
     DeviceResult,
-    FailClosedPipelineResult,
+    FailClosedSecurityPipeline,
     TrustFactorResult,
     get_security_pipeline,
 )
 from app.services.context.collector import ContextSnapshot
 from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import GeoRegion, IPAddress, get_geo_resolver
-from app.services.protected_resource import get_protected_resource
 from app.services.trust_engine import evaluate as evaluate_trust_engine
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,6 +86,7 @@ def client() -> TestClient:
         id=_USER_ID,
         email="user@example.test",
         role="USER",
+        session_id=UUID(int=1),
     )
     application.dependency_overrides[deps.get_db_session] = override_session
     application.dependency_overrides[get_settings] = lambda: Settings(
@@ -96,6 +95,7 @@ def client() -> TestClient:
         device_hash_secret=_DEVICE_SECRET,
     )
     application.dependency_overrides[get_geo_resolver] = TestGeoResolver
+    application.dependency_overrides[get_security_pipeline] = FailClosedSecurityPipeline
     return TestClient(application, client=("127.0.0.1", 12345))
 
 
@@ -114,10 +114,90 @@ def test_authenticated_request_returns_only_curated_fail_closed_response(
         "decision",
         "explanation",
         "mfa_challenge_id",
+        "access_request_id",
     }
     assert response.json()["decision"] == "BLOCK"
     assert response.json()["mfa_challenge_id"] is None
+    assert response.json()["access_request_id"] is None
     assert _DEVICE_TOKEN not in response.text
+
+
+def test_evaluation_response_exposes_request_selector_separately_from_evaluation_id(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.api.routes import access as access_routes
+    from app.services.access_gateway import AccessGatewayResponse
+
+    request_id = UUID("fd347884-d0d2-4d9d-bbf8-990a94ef65c1")
+    evaluation_id = UUID("b874ea67-2156-4faf-a96f-e74fa54f4c76")
+
+    async def approved_request(**_kwargs: object) -> AccessGatewayResponse:
+        return AccessGatewayResponse(
+            evaluation_id=evaluation_id,
+            decision="ALLOW",
+            explanation="Access is approved.",
+            access_request_id=request_id,
+        )
+
+    monkeypatch.setattr(access_routes, "access_gateway", approved_request)
+    response = client.post(
+        "/access/evaluate",
+        json={"resource_id": "ops-dashboard"},
+        headers={"X-Device-Token": _DEVICE_TOKEN},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["evaluation_id"] == str(evaluation_id)
+    assert response.json()["access_request_id"] == str(request_id)
+
+
+def test_dashboard_resource_route_returns_content_only_after_atomic_consumption(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.db.repositories.access_request import AccessRequestRepository
+
+    async def consume(
+        _repository: object,
+        _request_id: UUID,
+        _user_id: UUID,
+        _auth_session_id: UUID,
+        _now: datetime,
+    ) -> bool:
+        return True
+
+    monkeypatch.setattr(AccessRequestRepository, "consume_dashboard_access", consume)
+    request_id = UUID("fd347884-d0d2-4d9d-bbf8-990a94ef65c1")
+    response = client.post("/resources/ops-dashboard", json={"access_request_id": str(request_id)})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "resource_id": "ops-dashboard",
+        "title": "Operations Dashboard",
+        "summary": "Your protected operations workspace is ready.",
+        "status": "operational",
+    }
+
+
+def test_dashboard_resource_route_fails_closed_when_request_cannot_be_consumed(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.db.repositories.access_request import AccessRequestRepository
+
+    async def reject(
+        _repository: object,
+        _request_id: UUID,
+        _user_id: UUID,
+        _auth_session_id: UUID,
+        _now: datetime,
+    ) -> bool:
+        return False
+
+    monkeypatch.setattr(AccessRequestRepository, "consume_dashboard_access", reject)
+    response = client.post("/resources/ops-dashboard", json={"access_request_id": str(UUID(int=1))})
+
+    assert response.status_code == 403
+    assert response.json()["error"]["message"] == "Access denied"
+    assert "sql" not in response.text.lower()
 
 
 def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
@@ -500,22 +580,8 @@ def test_device_token_is_not_logged(
     assert _DEVICE_TOKEN not in repr(added[0].details)
 
 
-def test_default_pipeline_has_only_an_explicit_degraded_result() -> None:
-    async def execute() -> object:
-        return await get_security_pipeline().run(
-            principal=AuthenticatedPrincipal(_USER_ID, "user@example.test", "USER"),
-            resource=get_protected_resource("ops-dashboard"),
-            device_token=_DEVICE_TOKEN,
-            client_ip="127.0.0.1",
-            user_agent=None,
-        )
-
-    result = run(execute())
-    assert isinstance(result, FailClosedPipelineResult)
-    assert result.explanation
-    assert not hasattr(result, "decision")
-    assert not hasattr(result, "trust_score")
-    assert not hasattr(result, "factors")
+def test_production_dependency_selects_gateway_owned_evaluation() -> None:
+    assert get_security_pipeline() is None
 
 
 def test_gateway_failure_returns_safe_error_and_records_sanitized_event(

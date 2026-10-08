@@ -23,7 +23,7 @@ import { AuthEntryRoute } from "./AuthEntryRoute.tsx";
 import { ProtectedRoute } from "./ProtectedRoute.tsx";
 
 const location = {
-  pathname: "/access",
+  pathname: "/login",
   search: "",
   hash: "",
   state: null,
@@ -48,14 +48,48 @@ describe("authentication entry navigation", () => {
     expect(AuthEntryRoute({ children: child })).toBe(child);
   });
 
-  it("redirects an authenticated user away from login/signup to the protected page", () => {
+  it.each(["/login", "/signup"])(
+    "redirects authenticated direct entry at %s to Dashboard",
+    (pathname) => {
+      authState.session = { access_token: "test-token" };
+      authState.user = { id: "test-user" };
+      useLocationMock.mockReturnValue({ ...location, pathname, state: null });
+
+      const element = AuthEntryRoute({ children: "auth form" }) as ReactElement;
+
+      expect(element.type).toBe(Navigate);
+      expect(element.props).toEqual({ to: "/dashboard", replace: true });
+    },
+  );
+
+  it.each(["/login", "/signup"])(
+    "preserves a valid protected destination for an authenticated %s entry",
+    (pathname) => {
+      authState.session = { access_token: "test-token" };
+      authState.user = { id: "test-user" };
+      useLocationMock.mockReturnValue({
+        ...location,
+        pathname,
+        state: { from: { pathname: "/operations" } },
+      });
+
+      const element = AuthEntryRoute({ children: "auth form" }) as ReactElement;
+
+      expect(element.props).toEqual({ to: "/operations", replace: true });
+    },
+  );
+
+  it("uses Dashboard for an unsafe preserved destination", () => {
     authState.session = { access_token: "test-token" };
     authState.user = { id: "test-user" };
+    useLocationMock.mockReturnValue({
+      ...location,
+      state: { from: { pathname: "https://attacker.example" } },
+    });
 
     const element = AuthEntryRoute({ children: "auth form" }) as ReactElement;
 
-    expect(element.type).toBe(Navigate);
-    expect(element.props).toEqual({ to: "/access", replace: true });
+    expect(element.props).toEqual({ to: "/dashboard", replace: true });
   });
 
   it("shows session restoration instead of redirecting while auth is loading", () => {

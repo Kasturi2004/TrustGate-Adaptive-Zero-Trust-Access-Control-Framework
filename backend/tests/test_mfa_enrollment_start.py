@@ -56,7 +56,7 @@ def _client(
     email: str | None = _EMAIL,
 ) -> TestClient:
     settings = _settings()
-    principal = AuthenticatedPrincipal(user_id, email, "USER")
+    principal = AuthenticatedPrincipal(user_id, email, "USER", UUID(int=1))
     monkeypatch.setattr(mfa_secrets, "get_settings", lambda: settings)
     app = create_app(settings)
 

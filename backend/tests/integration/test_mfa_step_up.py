@@ -27,6 +27,7 @@ from app.db.models.policy_version import PolicyVersion
 from app.db.models.rate_limit_state import RateLimitState
 from app.db.models.security_event import SecurityEvent
 from app.db.models.trust_evaluation import TrustEvaluation
+from app.db.repositories.access_request import AccessRequestRepository
 from app.db.session import create_async_engine_for_url
 from app.schemas.mfa import TotpStepUpVerificationRequest
 from app.services.context import client_ip as client_ip_module
@@ -107,6 +108,7 @@ async def _create_challenge_records(
     access_request = AccessRequest(
         id=uuid4(),
         user_id=user_id,
+        auth_session_id=UUID(int=1),
         device_id=device.id,
         source_ip=IPv4Address("192.0.2.47"),
         initial_decision="STEP_UP",
@@ -172,6 +174,17 @@ def test_step_up_verification_persists_success_and_rejects_replay(
     async def exercise(session: AsyncSession) -> None:
         user_id, access_request, challenge = await _create_challenge_records(session)
         request_id = access_request.id
+        assert (
+            await AccessRequestRepository(session).resolve_step_up(
+                access_request.id,
+                user_id,
+                UUID("55555555-5555-4555-8555-555555555555"),
+                _NOW,
+            )
+            is None
+        )
+        await session.refresh(access_request)
+        assert access_request.final_outcome is None
         result = await mfa_routes.verify_totp_step_up(
             request=TotpStepUpVerificationRequest(
                 mfa_challenge_id=challenge.id,
@@ -179,7 +192,7 @@ def test_step_up_verification_persists_success_and_rejects_replay(
             ),
             http_request=_request(),
             response=Response(),
-            principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+            principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
             session=session,
             clock=FixedClock(_NOW),
         )
@@ -238,7 +251,7 @@ def test_step_up_verification_persists_success_and_rejects_replay(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -295,7 +308,7 @@ def test_degraded_evaluation_cannot_be_upgraded_by_totp(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -335,7 +348,7 @@ def test_non_step_up_or_resolved_request_cannot_be_authorized(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -365,7 +378,7 @@ def test_failed_totp_does_not_resolve_access_request(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -455,7 +468,7 @@ def test_failed_attempt_event_failure_rolls_back_attempt_count(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -498,7 +511,9 @@ def test_expired_challenge_event_is_persisted_once_with_expiry_transition(
                     ),
                     http_request=_request(),
                     response=Response(),
-                    principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                    principal=AuthenticatedPrincipal(
+                        user_id, "mfa@example.test", "USER", UUID(int=1)
+                    ),
                     session=session,
                     clock=FixedClock(_NOW),
                 )
@@ -582,7 +597,7 @@ def test_expiry_event_failure_rolls_back_challenge_expiry(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -624,7 +639,9 @@ def test_locked_challenge_event_is_persisted_once_with_lock_transition(
                     ),
                     http_request=_request(),
                     response=Response(),
-                    principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                    principal=AuthenticatedPrincipal(
+                        user_id, "mfa@example.test", "USER", UUID(int=1)
+                    ),
                     session=session,
                     clock=FixedClock(_NOW),
                 )
@@ -714,7 +731,7 @@ def test_lock_event_failure_rolls_back_challenge_lock(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -760,7 +777,7 @@ def test_event_persistence_failure_rolls_back_challenge_and_access_transition(
                 ),
                 http_request=_request(),
                 response=Response(),
-                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER", UUID(int=1)),
                 session=session,
                 clock=FixedClock(_NOW),
             )
@@ -812,7 +829,9 @@ def test_concurrent_verification_authorizes_the_request_once(
                         ),
                         http_request=_request(client_ip),
                         response=Response(),
-                        principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                        principal=AuthenticatedPrincipal(
+                            user_id, "mfa@example.test", "USER", UUID(int=1)
+                        ),
                         session=session,
                         clock=FixedClock(_NOW),
                     )
@@ -963,7 +982,9 @@ def test_concurrent_same_time_step_on_distinct_challenges_authorizes_once(
                         ),
                         http_request=_request(client_ip),
                         response=Response(),
-                        principal=AuthenticatedPrincipal(user_id, "mfa@example.test", "USER"),
+                        principal=AuthenticatedPrincipal(
+                            user_id, "mfa@example.test", "USER", UUID(int=1)
+                        ),
                         session=session,
                         clock=FixedClock(_NOW),
                     )

@@ -25,7 +25,7 @@ npm ci --prefix frontend
 
 On macOS or Linux, create the virtual environment with `python3.12 -m venv backend/.venv` and call `backend/.venv/bin/python` instead of `backend\.venv\Scripts\python`.
 
-`.env` stays on your machine. `.env.example` is the committed template. The API needs `APP_ENV` and `CORS_ALLOWED_ORIGIN`. The frontend needs `VITE_API_BASE_URL`. `DATABASE_URL` is optional for `GET /health` and required only for the database connectivity test.
+`.env` stays on your machine. `.env.example` is the committed template. The API needs `APP_ENV` and `CORS_ALLOWED_ORIGIN` to start. The frontend needs `VITE_API_BASE_URL`. Set a strong random `DEVICE_HASH_SECRET` in the repository-root `.env` for access evaluation and device recognition; it is backend-only and must never use a `VITE_` name. The access/device-context path fails closed if it is missing. `DATABASE_URL` is optional for `GET /health` and required only for database connectivity.
 
 ## Run locally
 

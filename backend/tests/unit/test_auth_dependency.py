@@ -38,6 +38,7 @@ def _token(user_id: UUID = _USER_ID, *, role: str = "ADMIN") -> str:
     return jwt.encode(
         {
             "sub": str(user_id),
+            "session_id": str(user_id),
             "aud": "authenticated",
             "iss": "https://test-project.supabase.co/auth/v1",
             "exp": _FUTURE_EXPIRY,

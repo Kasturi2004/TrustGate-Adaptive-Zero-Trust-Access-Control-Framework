@@ -30,10 +30,10 @@ from app.services.access_gateway import (
     CompletePipelineResult,
     ContextResult,
     DeviceResult,
+    FailClosedSecurityPipeline,
     PipelineResult,
     TrustFactorResult,
     access_gateway,
-    get_security_pipeline,
 )
 from app.services.context.collector import ContextSnapshot
 from app.services.context.device_familiarity import device_token_hash
@@ -69,6 +69,25 @@ _GATEWAY_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+
+
+async def _gateway_row_counts(
+    session: AsyncSession, models: tuple[type, ...] = _ALL_GATEWAY_MODELS
+) -> dict[str, int]:
+    """Count gateway rows as a rollback baseline without assuming empty tables."""
+    return {
+        model.__name__: int(await session.scalar(select(func.count()).select_from(model)) or 0)
+        for model in models
+    }
+
+
+async def _assert_gateway_row_counts_unchanged(
+    session: AsyncSession,
+    before: dict[str, int],
+    models: tuple[type, ...] = _ALL_GATEWAY_MODELS,
+) -> None:
+    """Assert that a failed gateway operation added no persisted rows."""
+    assert await _gateway_row_counts(session, models) == before
 
 
 class GatewayGeoResolver:
@@ -203,7 +222,8 @@ def test_default_pipeline_blocks_records_event_and_creates_no_application_rows(
 ) -> None:
     async def exercise(session: AsyncSession) -> None:
         user_id, _ = await _create_prerequisites(session)
-        principal = AuthenticatedPrincipal(user_id, None, "USER")
+        before = await _gateway_row_counts(session, _APPLICATION_MODELS)
+        principal = AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1))
 
         result = await access_gateway(
             session=session,
@@ -212,15 +232,20 @@ def test_default_pipeline_blocks_records_event_and_creates_no_application_rows(
             device_token=_RAW_DEVICE_TOKEN,
             client_ip="192.0.2.10",
             user_agent="test",
-            pipeline=get_security_pipeline(),
+            pipeline=FailClosedSecurityPipeline(),
             clock=FixedClock(_NOW),
         )
 
         assert result.decision == "BLOCK"
         assert result.mfa_challenge_id is None
-        for model in _APPLICATION_MODELS:
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
-        events = list((await session.scalars(select(SecurityEvent))).all())
+        await _assert_gateway_row_counts_unchanged(session, before, _APPLICATION_MODELS)
+        events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(SecurityEvent.actor_id == user_id)
+                )
+            ).all()
+        )
         assert len(events) == 1
         assert events[0].event_type == "PIPELINE_DEGRADED_FAILSAFE"
         assert events[0].actor_id == user_id
@@ -275,7 +300,7 @@ def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
         async def exercise(session: AsyncSession) -> None:
             result = await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                principal=AuthenticatedPrincipal(user_id, email, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.17",
@@ -290,18 +315,37 @@ def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
             )
             assert result.decision == "STEP_UP"
             assert result.explanation == "Additional verification is required to continue."
-            request = await session.scalar(select(AccessRequest))
+            request = await session.scalar(
+                select(AccessRequest).where(AccessRequest.user_id == user_id)
+            )
             assert request is not None
             assert request.initial_decision == "STEP_UP"
             assert request.mfa_required is True
             assert request.final_outcome is None
             assert request.resolved_at is None
-            evaluation = await session.scalar(select(TrustEvaluation))
+            evaluation = await session.scalar(
+                select(TrustEvaluation).where(TrustEvaluation.access_request_id == request.id)
+            )
             assert evaluation is not None
             assert evaluation.status == "DEGRADED_FAILSAFE"
             assert evaluation.access_request_id == request.id
-            assert await session.scalar(select(func.count()).select_from(PolicyDecision)) == 1
-            events = list((await session.scalars(select(SecurityEvent))).all())
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(PolicyDecision)
+                    .where(PolicyDecision.access_request_id == request.id)
+                )
+                == 1
+            )
+            events = list(
+                (
+                    await session.scalars(
+                        select(SecurityEvent).where(
+                            SecurityEvent.access_request_id == request.id
+                        )
+                    )
+                ).all()
+            )
             assert len(events) == 2
             submission_events = [
                 row for row in events if row.event_type == "ACCESS_REQUEST_SUBMITTED"
@@ -347,7 +391,10 @@ def test_pipeline_exception_persists_unresolved_sanitized_step_up_failsafe(
                 await session.scalar(
                     select(func.count())
                     .select_from(SecurityEvent)
-                    .where(SecurityEvent.event_type == "MFA_CHALLENGE_CREATED")
+                    .where(
+                        SecurityEvent.event_type == "MFA_CHALLENGE_CREATED",
+                        SecurityEvent.access_request_id == request.id,
+                    )
                 )
                 == 0
             )
@@ -389,7 +436,7 @@ def test_step_up_failsafe_commit_failure_rolls_back_request_and_events(
         _, policy_id = await _create_prerequisites(session, user_id=user_id)
         response = await access_gateway(
             session=session,
-            principal=AuthenticatedPrincipal(user_id, None, "USER"),
+            principal=AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1)),
             resource=get_protected_resource("ops-dashboard"),
             device_token=_RAW_DEVICE_TOKEN,
             client_ip="192.0.2.18",
@@ -466,7 +513,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
-        principal = AuthenticatedPrincipal(user_id, None, "USER")
+        principal = AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1))
         pipeline = CompleteTestPipeline(_complete_result(policy_id, decision))
 
         result = await access_gateway(
@@ -481,9 +528,12 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         )
 
         assert pipeline.seen_token == _RAW_DEVICE_TOKEN
-        request = await session.scalar(select(AccessRequest))
+        request = await session.scalar(
+            select(AccessRequest).where(AccessRequest.user_id == user_id)
+        )
         assert request is not None
         assert request.user_id == user_id
+        assert request.auth_session_id == UUID(int=1)
         assert request.resource_id == "ops-dashboard"
         assert request.initial_decision == decision
         assert request.mfa_required is (decision == "STEP_UP")
@@ -501,12 +551,27 @@ def test_complete_pipeline_persists_eight_rows_atomically(
             assert challenge.expires_at == _NOW + gateway_service._MFA_CHALLENGE_LIFETIME
         else:
             assert result.mfa_challenge_id is None
-            assert await session.scalar(select(func.count()).select_from(OtpChallenge)) == 0
-        evaluation = await session.scalar(select(TrustEvaluation))
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(OtpChallenge)
+                    .where(OtpChallenge.access_request_id == request.id)
+                )
+                == 0
+            )
+        evaluation = await session.scalar(
+            select(TrustEvaluation).where(TrustEvaluation.access_request_id == request.id)
+        )
         assert evaluation is not None
         assert evaluation.id == result.evaluation_id
         assert evaluation.access_request_id == request.id
         assert evaluation.policy_version_id == policy_id
+        expected_risk_classification = {
+            "ALLOW": "LOW",
+            "STEP_UP": "MEDIUM",
+            "BLOCK": "HIGH",
+        }[decision]
+        assert evaluation.risk_classification == expected_risk_classification
         assert len(policy_calls) == 1
         evaluated_score, thresholds, decision_result = policy_calls[0]
         assert evaluated_score == evaluation.trust_score
@@ -516,14 +581,47 @@ def test_complete_pipeline_persists_eight_rows_atomically(
             allow_threshold=policy_version.allow_threshold,
             stepup_threshold=policy_version.stepup_threshold,
         )
-        assert await session.scalar(select(func.count()).select_from(Device)) == 1
-        assert await session.scalar(select(func.count()).select_from(ContextSignal)) == 1
-        assert await session.scalar(select(func.count()).select_from(TrustEvaluation)) == 1
-        assert await session.scalar(select(func.count()).select_from(OtpChallenge)) == int(
-            decision == "STEP_UP"
+        assert (
+            await session.scalar(
+                select(func.count()).select_from(Device).where(Device.user_id == user_id)
+            )
+            == 1
         )
-        assert await session.scalar(select(func.count()).select_from(TrustFactor)) == 4
-        policy_decision = await session.scalar(select(PolicyDecision))
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(ContextSignal)
+                .where(ContextSignal.access_request_id == request.id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(TrustEvaluation)
+                .where(TrustEvaluation.access_request_id == request.id)
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(OtpChallenge)
+                .where(OtpChallenge.access_request_id == request.id)
+            )
+            == int(decision == "STEP_UP")
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(TrustFactor)
+                .where(TrustFactor.trust_evaluation_id == evaluation.id)
+            )
+            == 4
+        )
+        policy_decision = await session.scalar(
+            select(PolicyDecision).where(PolicyDecision.access_request_id == request.id)
+        )
         assert policy_decision is not None
         assert decision_result.decision == decision
         assert policy_decision.decision == decision_result.decision
@@ -541,7 +639,15 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert device.device_hash != _RAW_DEVICE_TOKEN
         assert _RAW_DEVICE_TOKEN not in repr(device.device_hash)
         assert _GATEWAY_USER_AGENT not in repr(device)
-        events = list((await session.scalars(select(SecurityEvent))).all())
+        events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.access_request_id == request.id
+                    )
+                )
+            ).all()
+        )
         submission_events = [
             event for event in events if event.event_type == "ACCESS_REQUEST_SUBMITTED"
         ]
@@ -550,6 +656,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         assert submission_event.actor_id == user_id
         assert submission_event.access_request_id == request.id
         assert submission_event.details == {}
+        assert submission_event.risk_category == expected_risk_classification
 
         challenge_events = [
             event for event in events if event.event_type == "MFA_CHALLENGE_CREATED"
@@ -567,6 +674,7 @@ def test_complete_pipeline_persists_eight_rows_atomically(
         ]
         assert len(outcome_events) == 1
         event = outcome_events[0]
+        assert event.risk_category == expected_risk_classification
         assert (
             event.event_type
             == {
@@ -625,7 +733,7 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             )
             response = await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                principal=AuthenticatedPrincipal(user_id, email, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.13",
@@ -648,14 +756,27 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
             assert request.mfa_required is True
             assert request.final_outcome is None
             assert request.resolved_at is None
-            assert await session.scalar(select(func.count()).select_from(OtpChallenge)) == 0
-            evaluation = await session.scalar(select(TrustEvaluation))
+            assert (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(OtpChallenge)
+                    .where(OtpChallenge.access_request_id == request.id)
+                )
+                == 0
+            )
+            evaluation = await session.scalar(
+                select(TrustEvaluation).where(
+                    TrustEvaluation.access_request_id == request.id
+                )
+            )
             assert evaluation is not None
             assert evaluation.status == "DEGRADED_FAILSAFE"
             assert evaluation.access_request_id == request.id
             assert evaluation.policy_version_id == active_policy_id
             assert evaluation.policy_version_id != rejected_policy_id
-            policy_decision = await session.scalar(select(PolicyDecision))
+            policy_decision = await session.scalar(
+                select(PolicyDecision).where(PolicyDecision.access_request_id == request.id)
+            )
             assert policy_decision is not None
             assert policy_decision.decision == "STEP_UP"
             assert policy_decision.access_request_id == request.id
@@ -699,7 +820,10 @@ def test_complete_result_policy_mismatch_recovers_through_step_up_failsafe(
                 await session.scalar(
                     select(func.count())
                     .select_from(SecurityEvent)
-                    .where(SecurityEvent.event_type == "MFA_CHALLENGE_CREATED")
+                    .where(
+                        SecurityEvent.event_type == "MFA_CHALLENGE_CREATED",
+                        SecurityEvent.access_request_id == request.id,
+                    )
                 )
                 == 0
             )
@@ -726,10 +850,11 @@ def test_failure_after_staging_records_rolls_back_everything(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
+        before = await _gateway_row_counts(session)
         with pytest.raises(RuntimeError, match="private test persistence failure"):
             await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, None, "USER"),
+                principal=AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.12",
@@ -738,9 +863,7 @@ def test_failure_after_staging_records_rolls_back_everything(
                 clock=FixedClock(_NOW),
             )
 
-        for model in _ALL_GATEWAY_MODELS:
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
-        assert await session.scalar(select(func.count()).select_from(PolicyDecision)) == 0
+        await _assert_gateway_row_counts_unchanged(session, before)
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -762,13 +885,14 @@ def test_trust_persistence_failure_rolls_back_context_and_gateway_rows(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
+        before = await _gateway_row_counts(session)
         profile = await session.get(Profile, user_id)
         assert profile is not None
 
         with pytest.raises(RuntimeError, match="private trust-factor persistence failure"):
             await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, None, "USER"),
+                principal=AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="8.8.8.8",
@@ -785,8 +909,7 @@ def test_trust_persistence_failure_rolls_back_context_and_gateway_rows(
                 ),
             )
 
-        for model in _ALL_GATEWAY_MODELS:
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+        await _assert_gateway_row_counts_unchanged(session, before)
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -806,10 +929,11 @@ def test_access_request_failure_does_not_persist_evaluation_or_device(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
+        before = await _gateway_row_counts(session)
         with pytest.raises(RuntimeError, match="private request persistence failure"):
             await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, None, "USER"),
+                principal=AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.13",
@@ -818,8 +942,7 @@ def test_access_request_failure_does_not_persist_evaluation_or_device(
                 clock=FixedClock(_NOW),
             )
 
-        for model in _ALL_GATEWAY_MODELS:
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+        await _assert_gateway_row_counts_unchanged(session, before)
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -835,10 +958,11 @@ def test_commit_failure_rolls_back_application_rows_and_staged_event(
 
     async def exercise(session: AsyncSession) -> None:
         user_id, policy_id = await _create_prerequisites(session)
+        before = await _gateway_row_counts(session)
         with pytest.raises(RuntimeError, match="private commit failure"):
             await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, None, "USER"),
+                principal=AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.16",
@@ -847,8 +971,7 @@ def test_commit_failure_rolls_back_application_rows_and_staged_event(
                 clock=FixedClock(_NOW),
             )
 
-        for model in _ALL_GATEWAY_MODELS:
-            assert await session.scalar(select(func.count()).select_from(model)) == 0
+        await _assert_gateway_row_counts_unchanged(session, before)
 
     migrated_test_database.run_in_transaction(exercise)
 
@@ -861,7 +984,7 @@ def test_raw_device_token_is_not_logged(
         user_id, policy_id = await _create_prerequisites(session)
         await access_gateway(
             session=session,
-            principal=AuthenticatedPrincipal(user_id, None, "USER"),
+            principal=AuthenticatedPrincipal(user_id, None, "USER", UUID(int=1)),
             resource=get_protected_resource("ops-dashboard"),
             device_token=_RAW_DEVICE_TOKEN,
             client_ip=str(IPv4Address("192.0.2.14")),
@@ -906,7 +1029,7 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             )
             response = await access_gateway(
                 session=session,
-                principal=AuthenticatedPrincipal(user_id, email, "USER"),
+                principal=AuthenticatedPrincipal(user_id, email, "USER", UUID(int=1)),
                 resource=get_protected_resource("ops-dashboard"),
                 device_token=_RAW_DEVICE_TOKEN,
                 client_ip="192.0.2.15",
@@ -928,7 +1051,11 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             assert request.mfa_required is True
             assert request.final_outcome is None
             assert request.resolved_at is None
-            evaluation = await session.scalar(select(TrustEvaluation))
+            evaluation = await session.scalar(
+                select(TrustEvaluation).where(
+                    TrustEvaluation.access_request_id == request.id
+                )
+            )
             assert evaluation is not None
             assert evaluation.status == "DEGRADED_FAILSAFE"
             assert evaluation.access_request_id == request.id
@@ -937,7 +1064,9 @@ def test_gateway_rejects_pipeline_output_containing_raw_device_token(
             )
             assert active_policy is not None
             assert evaluation.policy_version_id == active_policy.id
-            policy_decision = await session.scalar(select(PolicyDecision))
+            policy_decision = await session.scalar(
+                select(PolicyDecision).where(PolicyDecision.access_request_id == request.id)
+            )
             assert policy_decision is not None
             assert policy_decision.decision == "STEP_UP"
             assert policy_decision.access_request_id == request.id

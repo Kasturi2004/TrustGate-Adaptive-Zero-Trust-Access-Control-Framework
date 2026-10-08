@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Text, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Text, text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import FetchedValue
@@ -16,7 +16,10 @@ class Profile(Base):
     __table_args__ = (CheckConstraint("role IN ('USER', 'ADMIN')", name="role_values"),)
 
     id: Mapped[UUID] = mapped_column(
-        PG_UUID(as_uuid=True), ForeignKey("auth.users.id", ondelete="RESTRICT"), primary_key=True
+        # Supabase owns auth.users; its FK is created by the database migration.
+        # Keeping this external FK out of ORM metadata lets flush sort this model
+        # without requiring Supabase's managed table in Base.metadata.
+        PG_UUID(as_uuid=True), primary_key=True
     )
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'USER'"))

@@ -5,7 +5,7 @@ const workspaceRoutes = [
   {
     to: "/access",
     label: "Request protected access",
-    detail: "Submit a request for backend evaluation.",
+    detail: "Submit a request to access Operations Dashboard.",
     marker: "→",
   },
   { to: "/history", label: "Access history", detail: "Review your access activity.", marker: "03" },
@@ -19,6 +19,7 @@ const workspaceRoutes = [
 
 export function HomePage() {
   const { role } = useProfileRole();
+  const isAdmin = role === "ADMIN";
   const routes = [
     ...workspaceRoutes,
     ...(role === "ADMIN"
@@ -45,10 +46,15 @@ export function HomePage() {
         <div>
           <span className="page-eyebrow">TrustGate workspace</span>
           <h1>Dashboard</h1>
-          <p>Manage protected access requests and your account.</p>
+          <p>
+            {isAdmin
+              ? "Review security activity and manage protected access requests."
+              : "Manage protected access requests and your account."}
+          </p>
         </div>
-        <Link className="dashboard-primary-action" to="/access">
-          <span aria-hidden="true">＋</span> Request access
+        <Link className="dashboard-primary-action" to={isAdmin ? "/admin/overview" : "/access"}>
+          <span aria-hidden="true">{isAdmin ? "↗" : "＋"}</span>{" "}
+          {isAdmin ? "Admin dashboard" : "Request access"}
         </Link>
       </header>
 
@@ -63,7 +69,7 @@ export function HomePage() {
           </p>
         </div>
         <span className="boundary-status">
-          <i /> Backend decisions
+          <i /> Access checks
         </span>
       </section>
 

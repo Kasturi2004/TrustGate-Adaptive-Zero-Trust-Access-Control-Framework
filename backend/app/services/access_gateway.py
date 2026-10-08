@@ -1,7 +1,7 @@
 """Access gateway orchestration and atomic persistence boundary."""
 
 from collections.abc import Mapping
-from dataclasses import dataclass, fields, is_dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from ipaddress import IPv4Address, IPv6Address, ip_address
@@ -50,12 +50,12 @@ from app.services.context.location import GeoResolver
 from app.services.decision_explanation import explain_decision
 from app.services.policy_engine import evaluate_policy
 from app.services.protected_resource import ProtectedResource
+from app.services.risk_classifier import RiskClassification, classify_risk
 from app.services.security_events import record_event
 from app.services.trust_engine import evaluate as evaluate_trust
 from app.services.trust_persistence import persist_trust_evaluation
 
 Decision = Literal["ALLOW", "STEP_UP", "BLOCK"]
-RiskClassification = Literal["LOW", "MEDIUM", "HIGH"]
 FactorName = Literal[
     "device_familiarity",
     "device_health",
@@ -182,12 +182,9 @@ class FailClosedSecurityPipeline:
         return FailClosedPipelineResult()
 
 
-_DEFAULT_PIPELINE = FailClosedSecurityPipeline()
-
-
-def get_security_pipeline() -> SecurityPipeline:
-    """Provide the production fail-closed pipeline; tests may override it."""
-    return _DEFAULT_PIPELINE
+def get_security_pipeline() -> SecurityPipeline | None:
+    """Production evaluation is owned by the gateway; tests may inject a seam."""
+    return None
 
 
 class PipelineExecutionError(RuntimeError):
@@ -226,6 +223,7 @@ async def _persist_step_up_failsafe(
     session: AsyncSession,
     *,
     actor_id: UUID,
+    auth_session_id: UUID,
     resource: ProtectedResource,
     device_token: str,
     client_ip: str,
@@ -259,6 +257,7 @@ async def _persist_step_up_failsafe(
         AccessRequest(
             id=access_request_id,
             user_id=actor_id,
+            auth_session_id=auth_session_id,
             device_id=device.id,
             resource_id=resource.resource_id,
             source_ip=ip_address(client_ip),
@@ -323,6 +322,17 @@ class AccessGatewayResponse:
     decision: Decision
     explanation: str
     mfa_challenge_id: UUID | None = None
+    access_request_id: UUID | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _GatewayEvaluation:
+    """Server-derived values consumed by the gateway persistence path."""
+
+    device: DeviceResult
+    context: ContextResult | ContextSnapshot
+    trust_score: Decimal
+    factors: tuple[TrustFactorResult, ...]
 
 
 def _contains_device_token(value: object, device_token: str) -> bool:
@@ -370,7 +380,7 @@ async def access_gateway(
     device_token: str,
     client_ip: str,
     user_agent: str | None,
-    pipeline: SecurityPipeline,
+    pipeline: SecurityPipeline | None = None,
     clock: Clock,
     request: Request | None = None,
     profile: Profile | None = None,
@@ -379,12 +389,17 @@ async def access_gateway(
 ) -> AccessGatewayResponse:
     """Run the server pipeline and persist its complete result atomically.
 
-    The default fail-closed result persists only its standalone security event;
-    no incomplete access-request/evaluation rows are written.
+    Production calls proceed directly from the server-collected context. The
+    optional pipeline seam exists only for isolated gateway tests.
     """
     trust_evaluation: TrustEvaluationResult | None = None
     policy_version_id: UUID | None = None
     policy_decision: PolicyDecisionResult | None = None
+    evaluation: _GatewayEvaluation | None = None
+    failed_closed_result: FailClosedPipelineResult | None = None
+    pipeline_result: CompletePipelineResult | None = None
+    device_result: DeviceResult | None = None
+    evaluated_context: ContextResult | ContextSnapshot | None = None
     try:
         context_snapshot: ContextSnapshot | None = None
         if request is not None or profile is not None or geo_resolver is not None:
@@ -400,22 +415,44 @@ async def access_gateway(
                 geo_resolver=geo_resolver,
                 settings=settings,
             )
-        evaluated = await pipeline.run(
-            principal=principal,
-            resource=resource,
-            device_token=device_token,
-            client_ip=client_ip,
-            user_agent=user_agent,
-            context_snapshot=context_snapshot,
-        )
-        if not isinstance(evaluated, (CompletePipelineResult, FailClosedPipelineResult)):
-            raise TypeError("Security pipeline returned an unsupported result")
-        if isinstance(evaluated, CompletePipelineResult):
-            _validate_complete_result(evaluated, device_token)
+
+        if pipeline is None:
+            if context_snapshot is None:
+                raise ValueError("Production access evaluation requires server-derived context")
+            device_hash = device_token_hash(device_token, settings=settings)
+            if device_hash is None:
+                raise ValueError("Device identity is unavailable")
+            device_result = DeviceResult(
+                device_hash=device_hash,
+                last_user_agent_family=context_snapshot.device_health.browser_family,
+                last_user_agent_version=context_snapshot.device_health.browser_version,
+            )
+            evaluated_context = context_snapshot
+        else:
+            evaluated = await pipeline.run(
+                principal=principal,
+                resource=resource,
+                device_token=device_token,
+                client_ip=client_ip,
+                user_agent=user_agent,
+                context_snapshot=context_snapshot,
+            )
+            if not isinstance(evaluated, (CompletePipelineResult, FailClosedPipelineResult)):
+                raise TypeError("Security pipeline returned an unsupported result")
+            if isinstance(evaluated, FailClosedPipelineResult):
+                failed_closed_result = evaluated
+            else:
+                pipeline_result = evaluated
+                _validate_complete_result(evaluated, device_token)
+                device_result = evaluated.device
+                evaluated_context = context_snapshot or evaluated.context
+
+        if failed_closed_result is None:
             active_policy = await PolicyVersionRepository(session).get_active()
             if active_policy is None:
                 raise _MissingActivePolicyError
             policy_version_id = active_policy.id
+
             if context_snapshot is not None:
                 policy_weights = TrustWeights.model_validate(
                     {
@@ -432,29 +469,41 @@ async def access_gateway(
                     time_raw=cast(TrustTimeSignal, context_snapshot.time_raw),
                 )
                 trust_evaluation = evaluate_trust(signals, policy_weights)
-                evaluated = replace(
-                    evaluated,
-                    context=context_snapshot,
-                    policy_version_id=policy_version_id,
-                    trust_score=trust_evaluation.trust_score,
-                    factors=tuple(
-                        TrustFactorResult(
-                            factor_name=factor.factor_name,
-                            raw_value=factor.raw_value,
-                            normalized_score=factor.normalized_score,
-                            weight=factor.weight,
-                            weighted_contribution=factor.weighted_contribution,
-                        )
-                        for factor in trust_evaluation.factors
-                    ),
+                trust_score = trust_evaluation.trust_score
+                factors = tuple(
+                    TrustFactorResult(
+                        factor_name=factor.factor_name,
+                        raw_value=factor.raw_value,
+                        normalized_score=factor.normalized_score,
+                        weight=factor.weight,
+                        weighted_contribution=factor.weighted_contribution,
+                    )
+                    for factor in trust_evaluation.factors
                 )
-            elif evaluated.policy_version_id != policy_version_id:
-                raise RuntimeError("Trust result policy does not match the active policy")
+            else:
+                if device_result is None or evaluated_context is None:
+                    raise RuntimeError("Access evaluation inputs are incomplete")
+                if pipeline_result is None:
+                    raise ValueError("Production access evaluation requires a context snapshot")
+                if pipeline_result.policy_version_id != policy_version_id:
+                    raise RuntimeError("Trust result policy does not match the active policy")
+                trust_score = pipeline_result.trust_score
+                factors = pipeline_result.factors
+
+            if device_result is None or evaluated_context is None:
+                raise RuntimeError("Access evaluation inputs are incomplete")
+            evaluation = _GatewayEvaluation(
+                device=device_result,
+                context=evaluated_context,
+                trust_score=trust_score,
+                factors=factors,
+            )
             policy_thresholds = PolicyThresholds(
                 allow_threshold=active_policy.allow_threshold,
                 stepup_threshold=active_policy.stepup_threshold,
             )
-            policy_decision = evaluate_policy(evaluated.trust_score, policy_thresholds)
+            risk_classification = classify_risk(trust_score)
+            policy_decision = evaluate_policy(trust_score, policy_thresholds)
     except _MissingActivePolicyError:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         return AccessGatewayResponse(
@@ -479,6 +528,7 @@ async def access_gateway(
             failsafe_evaluation_id = await _persist_step_up_failsafe(
                 session,
                 actor_id=principal.id,
+                auth_session_id=principal.session_id,
                 resource=resource,
                 device_token=device_token,
                 client_ip=client_ip,
@@ -501,15 +551,20 @@ async def access_gateway(
         )
 
     evaluation_id = uuid4()
-    if isinstance(evaluated, FailClosedPipelineResult):
+    if failed_closed_result is not None:
         await _persist_failsafe_event(session, principal.id)
         return AccessGatewayResponse(
             evaluation_id=evaluation_id,
             decision="BLOCK",
-            explanation=evaluated.explanation,
+            explanation=failed_closed_result.explanation,
+        )
+        return AccessGatewayResponse(
+            evaluation_id=evaluation_id,
+            decision="BLOCK",
+            explanation=failed_closed_result.explanation,
         )
 
-    if policy_version_id is None or policy_decision is None:
+    if evaluation is None or policy_version_id is None or policy_decision is None:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         raise PipelineExecutionError("Access evaluation is unavailable")
 
@@ -517,8 +572,8 @@ async def access_gateway(
     mfa_challenge_id: UUID | None = None
 
     now = (
-        evaluated.context.captured_at
-        if isinstance(evaluated.context, ContextSnapshot)
+        evaluation.context.captured_at
+        if isinstance(evaluation.context, ContextSnapshot)
         else clock.now()
     )
     if now.utcoffset() is None:
@@ -529,12 +584,12 @@ async def access_gateway(
         device = Device(
             id=uuid4(),
             user_id=principal.id,
-            device_hash=evaluated.device.device_hash,
+            device_hash=evaluation.device.device_hash,
             recognized_at=None,
             first_seen_at=now,
             last_seen_at=now,
-            last_user_agent_family=evaluated.device.last_user_agent_family,
-            last_user_agent_version=evaluated.device.last_user_agent_version,
+            last_user_agent_family=evaluation.device.last_user_agent_family,
+            last_user_agent_version=evaluation.device.last_user_agent_version,
         )
         persisted_device = await DeviceRepository(session).upsert_for_access(device)
 
@@ -542,10 +597,11 @@ async def access_gateway(
         access_request = AccessRequest(
             id=access_request_id,
             user_id=principal.id,
+            auth_session_id=principal.session_id,
             device_id=persisted_device.id,
             resource_id=resource.resource_id,
             source_ip=ip_address(client_ip),
-            resolved_region=evaluated.context.resolved_region,
+            resolved_region=evaluation.context.resolved_region,
             initial_decision=policy_decision.decision,
             mfa_required=policy_decision.decision == "STEP_UP",
             requested_at=now,
@@ -558,18 +614,18 @@ async def access_gateway(
             actor_id=principal.id,
             access_request_id=access_request_id,
             decision=policy_decision.decision,
-            risk_category=evaluated.risk_classification,
+            risk_category=risk_classification,
         )
 
         ContextSignalRepository(session).add(
             ContextSignal(
                 id=uuid4(),
                 access_request_id=access_request_id,
-                device_familiarity_raw=evaluated.context.device_familiarity_raw,
-                device_health_raw=evaluated.context.device_health_raw,
-                location_raw=evaluated.context.location_raw,
-                time_raw=evaluated.context.time_raw,
-                raw_context=dict(evaluated.context.raw_context),
+                device_familiarity_raw=evaluation.context.device_familiarity_raw,
+                device_health_raw=evaluation.context.device_health_raw,
+                location_raw=evaluation.context.location_raw,
+                time_raw=evaluation.context.time_raw,
+                raw_context=dict(evaluation.context.raw_context),
                 captured_at=now,
             )
         )
@@ -581,7 +637,6 @@ async def access_gateway(
                 result=trust_evaluation,
                 access_request_id=access_request_id,
                 policy_version_id=policy_version_id,
-                risk_classification=evaluated.risk_classification,
                 evaluated_at=now,
             )
             evaluation_id = persisted_evaluation.id
@@ -591,8 +646,8 @@ async def access_gateway(
                     id=evaluation_id,
                     access_request_id=access_request_id,
                     policy_version_id=policy_version_id,
-                    trust_score=evaluated.trust_score,
-                    risk_classification=evaluated.risk_classification,
+                    trust_score=evaluation.trust_score,
+                    risk_classification=risk_classification,
                     status="COMPLETE",
                     evaluated_at=now,
                 )
@@ -610,7 +665,7 @@ async def access_gateway(
                         weight=factor.weight,
                         weighted_contribution=factor.weighted_contribution,
                     )
-                    for factor in evaluated.factors
+                    for factor in evaluation.factors
                 ]
             )
             await session.flush()
@@ -658,7 +713,7 @@ async def access_gateway(
             access_request_id=access_request_id,
             trust_evaluation_id=evaluation_id,
             decision=final_decision,
-            risk_category=evaluated.risk_classification,
+            risk_category=risk_classification,
         )
         await session.flush()
 
@@ -681,4 +736,5 @@ async def access_gateway(
         decision=final_decision,
         explanation=explain_decision(final_decision),
         mfa_challenge_id=mfa_challenge_id,
+        access_request_id=access_request_id,
     )

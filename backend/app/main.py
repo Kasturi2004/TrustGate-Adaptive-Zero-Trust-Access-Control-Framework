@@ -4,9 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
 
+from app.api.routes.access import resource_router
 from app.api.routes.access import router as access_router
 from app.api.routes.admin import admin_router
 from app.api.routes.auth import router as auth_router
+from app.api.routes.devices import router as devices_router
 from app.api.routes.health import router as health_router
 from app.api.routes.mfa import router as mfa_router
 from app.core.config import Settings, get_settings
@@ -38,7 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=[resolved.cors_allowed_origin],
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=[
             "Accept",
             "Authorization",
@@ -51,6 +53,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router)
     app.include_router(mfa_router)
     app.include_router(access_router)
+    app.include_router(resource_router)
+    app.include_router(devices_router)
     app.include_router(admin_router)
     return app
 

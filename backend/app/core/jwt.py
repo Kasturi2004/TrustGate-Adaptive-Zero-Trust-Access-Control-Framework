@@ -24,9 +24,10 @@ class InvalidJWTError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class AuthenticatedUser:
-    """Verified token identity; authorization roles must be loaded separately."""
+    """Verified user and authentication-session identities from the signed token."""
 
     id: UUID
+    session_id: UUID
 
 
 def _supabase_auth_urls(supabase_url: str | None) -> tuple[str, str]:
@@ -88,7 +89,7 @@ def validate_access_token(
     *,
     settings: Settings | None = None,
 ) -> AuthenticatedUser:
-    """Validate a Supabase ES256 access token and return its UUID identity."""
+    """Validate a Supabase ES256 token and return its user and session UUIDs."""
     if not isinstance(token, str) or not token.strip():
         raise InvalidJWTError("Invalid access token")
 
@@ -101,7 +102,7 @@ def validate_access_token(
             algorithms=[_ALGORITHM],
             audience=_AUDIENCE,
             issuer=issuer,
-            options={"require": ["exp", "aud", "sub", "iss"]},
+            options={"require": ["exp", "aud", "sub", "iss", "session_id"]},
         )
     except (jwt.PyJWTError, TypeError, ValueError, OverflowError):
         raise InvalidJWTError("Invalid access token") from None
@@ -114,4 +115,12 @@ def validate_access_token(
     except ValueError:
         raise InvalidJWTError("Invalid access token") from None
 
-    return AuthenticatedUser(id=user_id)
+    session_subject = claims.get("session_id")
+    if not isinstance(session_subject, str):
+        raise InvalidJWTError("Invalid access token")
+    try:
+        session_id = UUID(session_subject)
+    except ValueError:
+        raise InvalidJWTError("Invalid access token") from None
+
+    return AuthenticatedUser(id=user_id, session_id=session_id)

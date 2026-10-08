@@ -16,6 +16,7 @@ from app.db.models.device import Device
 from app.db.models.policy_decision import PolicyDecision
 from app.db.models.policy_version import PolicyVersion
 from app.db.models.profile import Profile
+from app.db.models.security_event import SecurityEvent
 from app.db.models.trust_evaluation import TrustEvaluation
 from app.db.models.trust_factor import TrustFactor
 from app.schemas.policy import PolicyDecisionResult, PolicyThresholds
@@ -79,9 +80,11 @@ def _request() -> Request:
 
 
 class CollectorPipeline:
-    def __init__(self, policy_version_id: UUID) -> None:
+    def __init__(self, policy_version_id: UUID, risk_classification: str = "MEDIUM") -> None:
         self.policy_version_id = policy_version_id
+        self.risk_classification = risk_classification
         self.snapshot: ContextSnapshot | None = None
+        self.result: CompletePipelineResult | None = None
 
     async def run(
         self,
@@ -96,10 +99,20 @@ class CollectorPipeline:
         del principal, resource, device_token, client_ip, user_agent
         assert context_snapshot is not None
         self.snapshot = context_snapshot
-        return _result(context_snapshot, self.policy_version_id)
+        self.result = _result(
+            context_snapshot,
+            self.policy_version_id,
+            risk_classification=self.risk_classification,
+        )
+        return self.result
 
 
-def _result(snapshot: ContextSnapshot, policy_version_id: UUID) -> CompletePipelineResult:
+def _result(
+    snapshot: ContextSnapshot,
+    policy_version_id: UUID,
+    *,
+    risk_classification: str = "MEDIUM",
+) -> CompletePipelineResult:
     return CompletePipelineResult(
         device=DeviceResult(
             device_hash=device_token_hash(
@@ -117,7 +130,7 @@ def _result(snapshot: ContextSnapshot, policy_version_id: UUID) -> CompletePipel
         context=snapshot,
         policy_version_id=policy_version_id,
         trust_score=Decimal("50.00"),
-        risk_classification="MEDIUM",
+        risk_classification=risk_classification,  # type: ignore[arg-type]
         factors=(
             TrustFactorResult(
                 "device_familiarity",
@@ -223,10 +236,10 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         active_policy_id = active_policy.id
         active_allow_threshold = active_policy.allow_threshold
         active_stepup_threshold = active_policy.stepup_threshold
-        pipeline = CollectorPipeline(active_policy_id)
+        pipeline = CollectorPipeline(active_policy_id, risk_classification="HIGH")
         result = await access_gateway(
             session=session,
-            principal=AuthenticatedPrincipal(user_id, profile.email, "USER"),
+            principal=AuthenticatedPrincipal(user_id, profile.email, "USER", UUID(int=1)),
             resource=get_protected_resource("ops-dashboard"),
             device_token=_TOKEN,
             client_ip="8.8.8.8",
@@ -244,6 +257,8 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         )
         snapshot = pipeline.snapshot
         assert snapshot is not None
+        assert pipeline.result is not None
+        assert pipeline.result.risk_classification == "HIGH"
 
         request = await session.scalar(
             select(AccessRequest).where(
@@ -271,6 +286,7 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert request.initial_decision == "ALLOW"
         assert evaluation.policy_version_id == active_policy_id
         assert evaluation.trust_score == Decimal("100.00")
+        assert evaluation.risk_classification == "LOW"
         assert len(policy_calls) == 1
         evaluated_score, thresholds, decision_result = policy_calls[0]
         assert evaluated_score == evaluation.trust_score
@@ -290,6 +306,23 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert policy_decision.access_request_id == request.id
         assert request.initial_decision == decision_result.decision
         assert request.mfa_required is False
+        access_events = list(
+            (
+                await session.scalars(
+                    select(SecurityEvent).where(
+                        SecurityEvent.access_request_id == request.id,
+                        SecurityEvent.event_type.in_(
+                            ("ACCESS_REQUEST_SUBMITTED", "ACCESS_ALLOWED")
+                        ),
+                    )
+                )
+            ).all()
+        )
+        assert len(access_events) == 2
+        assert {event.event_type: event.risk_category for event in access_events} == {
+            "ACCESS_REQUEST_SUBMITTED": "LOW",
+            "ACCESS_ALLOWED": "LOW",
+        }
         factors = list(
             (
                 await session.scalars(
@@ -321,5 +354,98 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert device.recognized_at == _NOW - timedelta(days=2)
         assert _TOKEN not in repr(signal.raw_context)
         assert "integration-jwt-not-for-storage" not in repr(signal.raw_context)
+
+    migrated_test_database.run_in_transaction(exercise)
+
+
+def test_repeated_device_identifier_reuses_user_scoped_unrecognized_device(
+    migrated_test_database: ScratchDatabase,
+) -> None:
+    user_a_id = uuid4()
+    user_b_id = uuid4()
+    settings = Settings(
+        app_env="test",
+        cors_allowed_origin="http://localhost:5173",
+        device_hash_secret=_DEVICE_SECRET,
+    )
+
+    async def exercise(session: AsyncSession) -> None:
+        for user_id in (user_a_id, user_b_id):
+            await session.execute(
+                text("INSERT INTO auth.users (id, email) VALUES (:id, :email)"),
+                {"id": user_id, "email": f"stable-device-{user_id}@integration.test"},
+            )
+
+        policy = await session.scalar(
+            select(PolicyVersion).where(PolicyVersion.is_active.is_(True))
+        )
+        assert policy is not None
+        policy_id = policy.id
+        profiles = [await session.get(Profile, user_id) for user_id in (user_a_id, user_b_id)]
+        assert profiles[0] is not None
+        assert profiles[1] is not None
+        emails = {user_a_id: profiles[0].email, user_b_id: profiles[1].email}
+
+        observations: list[tuple[UUID, UUID, str, datetime | None]] = []
+        for user_id in (user_a_id, user_a_id, user_b_id):
+            profile = await session.get(Profile, user_id)
+            assert profile is not None
+            pipeline = CollectorPipeline(policy_id)
+            response = await access_gateway(
+                session=session,
+                principal=AuthenticatedPrincipal(user_id, emails[user_id], "USER", UUID(int=1)),
+                resource=get_protected_resource("ops-dashboard"),
+                device_token=_TOKEN,
+                client_ip="8.8.8.8",
+                user_agent=_USER_AGENT,
+                pipeline=pipeline,
+                clock=FixedClock(_NOW),
+                request=_request(),
+                profile=profile,
+                geo_resolver=StubGeoResolver(),
+                settings=settings,
+            )
+
+            assert response.access_request_id is not None
+            request = await session.get(AccessRequest, response.access_request_id)
+            assert request is not None
+            device = await session.get(Device, request.device_id)
+            assert device is not None
+            assert pipeline.snapshot is not None
+            assert pipeline.snapshot.device_familiarity_raw == "unknown_device"
+            observations.append((user_id, device.id, device.device_hash, device.recognized_at))
+
+            context_signal = await session.scalar(
+                select(ContextSignal).where(
+                    ContextSignal.access_request_id == response.access_request_id
+                )
+            )
+            assert context_signal is not None
+            assert context_signal.device_familiarity_raw == "unknown_device"
+            assert _TOKEN not in repr(context_signal.raw_context)
+
+        expected_hash = device_token_hash(_TOKEN, settings=settings)
+        assert expected_hash is not None
+        first_user_requests = observations[:2]
+        second_user_request = observations[2]
+        assert first_user_requests[0][1] == first_user_requests[1][1]
+        assert first_user_requests[0][2] == first_user_requests[1][2] == expected_hash
+        assert first_user_requests[0][3] is None
+        assert first_user_requests[1][3] is None
+        assert second_user_request[0] == user_b_id
+        assert second_user_request[1] != first_user_requests[0][1]
+        assert second_user_request[2] == expected_hash
+        assert second_user_request[3] is None
+        assert _TOKEN not in repr([item[2] for item in observations])
+
+        device_rows = list(
+            (
+                await session.scalars(
+                    select(Device).where(Device.user_id.in_((user_a_id, user_b_id)))
+                )
+            ).all()
+        )
+        assert len(device_rows) == 2
+        assert {row.user_id for row in device_rows} == {user_a_id, user_b_id}
 
     migrated_test_database.run_in_transaction(exercise)

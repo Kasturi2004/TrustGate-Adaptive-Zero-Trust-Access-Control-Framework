@@ -5,6 +5,7 @@ export interface AccessEvaluationResponse {
   decision: AccessDecision;
   explanation: string;
   mfa_challenge_id: string | null;
+  access_request_id: string | null;
 }
 
 export function isAccessEvaluationResponse(value: unknown): value is AccessEvaluationResponse {
@@ -19,6 +20,7 @@ export function isAccessEvaluationResponse(value: unknown): value is AccessEvalu
       response.decision === "STEP_UP" ||
       response.decision === "BLOCK") &&
     typeof response.explanation === "string" &&
+    (typeof response.access_request_id === "string" || response.access_request_id === null) &&
     (typeof response.mfa_challenge_id === "string" || response.mfa_challenge_id === null)
   );
 }

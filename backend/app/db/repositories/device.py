@@ -3,11 +3,13 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.models.access_request import AccessRequest
 from app.db.models.device import Device
+from app.db.models.otp_challenge import OtpChallenge
 
 
 class DeviceRepository:
@@ -28,6 +30,63 @@ class DeviceRepository:
         )
         result = await self._session.scalars(statement)
         return result.first()
+
+    async def get_recognizable_device(
+        self,
+        *,
+        access_request_id: UUID,
+        user_id: UUID,
+        auth_session_id: UUID,
+        device_hash: str,
+    ) -> Device | None:
+        """Find the request's device only after its approved request was redeemed."""
+        successful_mfa = exists(
+            select(OtpChallenge.id).where(
+                OtpChallenge.access_request_id == AccessRequest.id,
+                OtpChallenge.user_id == user_id,
+                OtpChallenge.status == "SUCCESS",
+                OtpChallenge.verified_at.is_not(None),
+            )
+        )
+        eligible_request = exists(
+            select(AccessRequest.id)
+            .where(
+                AccessRequest.id == access_request_id,
+                AccessRequest.user_id == user_id,
+                AccessRequest.auth_session_id == auth_session_id,
+                AccessRequest.device_id == Device.id,
+                AccessRequest.resource_id == "ops-dashboard",
+                AccessRequest.final_outcome == "ALLOW",
+                AccessRequest.consumed_at.is_not(None),
+                or_(
+                    and_(
+                        AccessRequest.initial_decision == "ALLOW",
+                        AccessRequest.mfa_required.is_(False),
+                    ),
+                    and_(
+                        AccessRequest.initial_decision == "STEP_UP",
+                        AccessRequest.mfa_required.is_(True),
+                        successful_mfa,
+                    ),
+                ),
+            )
+        )
+        statement = select(Device).where(
+            Device.user_id == user_id,
+            Device.device_hash == device_hash,
+            eligible_request,
+        )
+        result = await self._session.scalars(statement.with_for_update(of=Device))
+        return result.first()
+
+    async def set_recognized_at_if_unknown(
+        self, device: Device, recognized_at: datetime
+    ) -> Device:
+        """Recognize an existing device without changing its identity or history."""
+        if device.recognized_at is None:
+            device.recognized_at = recognized_at
+            await self._session.flush()
+        return device
 
     async def list_by_user(self, user_id: UUID) -> list[Device]:
         """Return a user's devices in stable first-seen and ID order."""

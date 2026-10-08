@@ -59,9 +59,9 @@ The implementation plan names `CORS_ALLOWED_ORIGIN` (one origin). The technical 
 
 `APP_ENV` is `local`, `test`, `staging`, or `production`. OpenAPI (`/docs`, `/redoc`, `/openapi.json`) is mounted only when `APP_ENV` is not `production`.
 
-Required Phase 1 variables are `APP_ENV` and `CORS_ALLOWED_ORIGIN` for the API, and `VITE_API_BASE_URL` for the frontend. The other variables in `.env.example` are commented out until a later phase reads them. Requiring unused secrets now would force placeholder credentials.
+`APP_ENV` and `CORS_ALLOWED_ORIGIN` are required for the API to start, and `VITE_API_BASE_URL` is required for the frontend. `DEVICE_HASH_SECRET` is required when access evaluation or device recognition hashes an `X-Device-Token`; keep a strong random value in the ignored repository-root `.env` only. Device hashing fails closed when this setting is missing, though it is not required just to boot the API.
 
-The API reads the repository-root `.env`. Vite is configured with `envDir` set to that same directory. Secrets never go in the frontend bundle beyond the `VITE_` variables a later phase actually needs. `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, and `SUPABASE_JWT_SECRET` are backend-only and are not given `VITE_` names.
+The API reads the repository-root `.env`. Vite is configured with `envDir` set to that same directory. Backend secrets must never go in the frontend bundle or use `VITE_` names. `DEVICE_HASH_SECRET`, `SUPABASE_SERVICE_ROLE_KEY`, `DATABASE_URL`, and `SUPABASE_JWT_SECRET` are backend-only.
 
 ## HTTP errors
 

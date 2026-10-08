@@ -14,7 +14,7 @@ from sqlalchemy import insert, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.database import ScratchDatabase
+from tests.integration.database import ScratchDatabase, repository_migration_head
 
 _TEST_TOTP_SECRET = "POSTGRES-INTEGRATION-TOTP-SECRET"
 _TEST_ENCRYPTION_SETTINGS = Settings(
@@ -40,7 +40,7 @@ def test_mfa_migration_and_credential_integrity(
         )
         revision = await session.scalar(text("SELECT version_num FROM public.alembic_version"))
         assert table_exists is True
-        assert revision == "20261005_09"
+        assert revision == repository_migration_head()
 
         user_id = uuid4()
         await _create_auth_user(session, user_id)

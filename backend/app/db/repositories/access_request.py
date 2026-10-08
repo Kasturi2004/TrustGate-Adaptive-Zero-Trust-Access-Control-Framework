@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import and_, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.access_request import AccessRequest
@@ -153,6 +153,7 @@ class AccessRequestRepository:
         self,
         access_request_id: UUID,
         user_id: UUID,
+        auth_session_id: UUID,
         resolved_at: datetime,
     ) -> AccessRequest | None:
         """Atomically resolve one still-pending MFA STEP_UP request to ALLOW."""
@@ -161,6 +162,7 @@ class AccessRequestRepository:
             .where(
                 AccessRequest.id == access_request_id,
                 AccessRequest.user_id == user_id,
+                AccessRequest.auth_session_id == auth_session_id,
                 AccessRequest.initial_decision == "STEP_UP",
                 AccessRequest.mfa_required.is_(True),
                 AccessRequest.final_outcome.is_(None),
@@ -174,3 +176,42 @@ class AccessRequestRepository:
             execution_options={"populate_existing": True},
         )
         return result.first()
+
+    async def consume_dashboard_access(
+        self, access_request_id: UUID, user_id: UUID, auth_session_id: UUID, now: datetime
+    ) -> bool:
+        """Atomically consume one approved dashboard request, requiring successful MFA if needed."""
+        successful_mfa = exists(
+            select(OtpChallenge.id).where(
+                OtpChallenge.access_request_id == AccessRequest.id,
+                OtpChallenge.user_id == user_id,
+                OtpChallenge.status == "SUCCESS",
+                OtpChallenge.verified_at.is_not(None),
+            )
+        )
+        statement = (
+            update(AccessRequest)
+            .where(
+                AccessRequest.id == access_request_id,
+                AccessRequest.user_id == user_id,
+                AccessRequest.auth_session_id == auth_session_id,
+                AccessRequest.resource_id == "ops-dashboard",
+                AccessRequest.final_outcome == "ALLOW",
+                AccessRequest.consumed_at.is_(None),
+                or_(
+                    and_(
+                        AccessRequest.initial_decision == "ALLOW",
+                        AccessRequest.mfa_required.is_(False),
+                    ),
+                    and_(
+                        AccessRequest.initial_decision == "STEP_UP",
+                        AccessRequest.mfa_required.is_(True),
+                        successful_mfa,
+                    ),
+                ),
+            )
+            .values(consumed_at=now)
+            .returning(AccessRequest.id)
+        )
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none() is not None

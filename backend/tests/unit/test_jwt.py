@@ -15,6 +15,7 @@ from jwt.algorithms import ECAlgorithm
 
 _USER_ID = UUID("2b0cb051-348f-41f5-8bac-bec1636f3ed2")
 _OTHER_USER_ID = UUID("ecec9bc6-913a-4c9f-9bd3-a4b2a7756061")
+_SESSION_ID = UUID("70c24d56-8ad2-491f-9f1b-11b5d09fe328")
 _SUPABASE_URL = "https://test-project.supabase.co"
 _ISSUER = f"{_SUPABASE_URL}/auth/v1"
 _FUTURE_EXPIRY = 2_000_000_000
@@ -43,6 +44,7 @@ def _token(
     private_key: ec.EllipticCurvePrivateKey,
     *,
     sub: str | None = str(_USER_ID),
+    session_id: str | None = str(_SESSION_ID),
     audience: str = "authenticated",
     expiry: int | None = _FUTURE_EXPIRY,
     issuer: str = _ISSUER,
@@ -52,6 +54,8 @@ def _token(
     claims: dict[str, object] = {"aud": audience, "iss": issuer}
     if sub is not None:
         claims["sub"] = sub
+    if session_id is not None:
+        claims["session_id"] = session_id
     if expiry is not None:
         claims["exp"] = expiry
     headers: dict[str, str] = {}
@@ -93,6 +97,7 @@ def test_valid_es256_token_returns_uuid_identity_and_ignores_role_claims(
     private_key = _new_key()
     claims = {
         "sub": str(_USER_ID),
+        "session_id": str(_SESSION_ID),
         "aud": "authenticated",
         "iss": _ISSUER,
         "exp": _FUTURE_EXPIRY,
@@ -104,8 +109,9 @@ def test_valid_es256_token_returns_uuid_identity_and_ignores_role_claims(
 
     identity = validate_access_token(token, settings=_settings())
 
-    assert identity == AuthenticatedUser(id=_USER_ID)
+    assert identity == AuthenticatedUser(id=_USER_ID, session_id=_SESSION_ID)
     assert identity.id == _USER_ID
+    assert identity.session_id == _SESSION_ID
     assert not hasattr(identity, "role")
 
 
@@ -174,6 +180,37 @@ def test_missing_subject_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(InvalidJWTError, match="Invalid access token"):
         validate_access_token(token, settings=_settings())
+
+
+def test_missing_session_id_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    token = _token(private_key, session_id=None)
+
+    with pytest.raises(InvalidJWTError, match="Invalid access token"):
+        validate_access_token(token, settings=_settings())
+
+
+def test_malformed_session_id_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    token = _token(private_key, session_id="not-a-uuid")
+
+    with pytest.raises(InvalidJWTError, match="Invalid access token"):
+        validate_access_token(token, settings=_settings())
+
+
+def test_refreshed_access_tokens_keep_the_same_session_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    first = validate_access_token(_token(private_key, expiry=_FUTURE_EXPIRY), settings=_settings())
+    refreshed = validate_access_token(
+        _token(private_key, expiry=_FUTURE_EXPIRY + 3600), settings=_settings()
+    )
+
+    assert first == refreshed == AuthenticatedUser(id=_USER_ID, session_id=_SESSION_ID)
 
 
 def test_non_uuid_subject_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,13 +318,13 @@ def test_unknown_kid_refresh_accepts_a_rotated_key_once(monkeypatch: pytest.Monk
 
     first_token = _token(current_key, kid="old-key")
     assert validate_access_token(first_token, settings=_settings()) == AuthenticatedUser(
-        id=_USER_ID
+        id=_USER_ID, session_id=_SESSION_ID
     )
     replace_jwks({"keys": [_jwk(rotated_key, "new-key")]})
 
     rotated_token = _token(rotated_key, kid="new-key")
     assert validate_access_token(rotated_token, settings=_settings()) == AuthenticatedUser(
-        id=_USER_ID
+        id=_USER_ID, session_id=_SESSION_ID
     )
     assert calls == [2]
 
@@ -297,8 +334,12 @@ def test_cached_jwks_avoids_fetching_on_every_validation(monkeypatch: pytest.Mon
     calls, _ = _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
     token = _token(private_key)
 
-    assert validate_access_token(token, settings=_settings()) == AuthenticatedUser(id=_USER_ID)
-    assert validate_access_token(token, settings=_settings()) == AuthenticatedUser(id=_USER_ID)
+    assert validate_access_token(token, settings=_settings()) == AuthenticatedUser(
+        id=_USER_ID, session_id=_SESSION_ID
+    )
+    assert validate_access_token(token, settings=_settings()) == AuthenticatedUser(
+        id=_USER_ID, session_id=_SESSION_ID
+    )
     assert calls == [1]
 
 

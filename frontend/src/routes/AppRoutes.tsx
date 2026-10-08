@@ -12,6 +12,7 @@ import { AccessHistoryPage } from "../pages/AccessHistoryPage.tsx";
 import { AdminDashboardPage } from "../pages/AdminDashboardPage.tsx";
 import { AdminEventsPage } from "../pages/AdminEventsPage.tsx";
 import { AdminEventInvestigationPage } from "../pages/AdminEventInvestigationPage.tsx";
+import { OperationsDashboardPage } from "../pages/OperationsDashboardPage.tsx";
 
 export function AppRoutes() {
   return (
@@ -34,6 +35,14 @@ export function AppRoutes() {
         }
       />
       <Route path="/dashboard" element={<HomePage />} />
+      <Route
+        path="/operations"
+        element={
+          <ProtectedRoute>
+            <OperationsDashboardPage />
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/access"
         element={

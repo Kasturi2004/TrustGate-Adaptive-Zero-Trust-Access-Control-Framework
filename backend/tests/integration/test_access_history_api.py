@@ -205,6 +205,7 @@ def _token(user_id: UUID) -> str:
     return jwt.encode(
         {
             "sub": str(user_id),
+            "session_id": str(user_id),
             "aud": "authenticated",
             "iss": f"{_SUPABASE_URL}/auth/v1",
             "exp": int(datetime.now(UTC).timestamp()) + 3600,

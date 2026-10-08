@@ -329,6 +329,7 @@ def _token(user_id: UUID, *, role_claim: str) -> str:
     return jwt.encode(
         {
             "sub": str(user_id),
+            "session_id": str(user_id),
             "role": role_claim,
             "aud": "authenticated",
             "iss": f"{_SUPABASE_URL}/auth/v1",
@@ -391,6 +392,7 @@ def test_admin_investigation_returns_the_full_persisted_chain_and_audits_read(
     }
     assert body["event"]["id"] == str(seeded_investigation.root_event_id)
     assert body["access_request"]["id"] == str(seeded_investigation.access_request_id)
+    assert "auth_session_id" not in body["access_request"]
     assert body["access_request"]["initial_decision"] == "STEP_UP"
     assert body["access_request"]["final_outcome"] == "ALLOW"
     assert body["access_request"]["source_ip"] == "203.0.113.45"
