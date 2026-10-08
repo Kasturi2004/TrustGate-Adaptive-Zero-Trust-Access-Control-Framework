@@ -29,7 +29,11 @@ from app.db.repositories.device import DeviceRepository
 from app.schemas.access import ProtectedResourceRequest
 from app.schemas.device import DeviceRecognitionRequest
 from app.schemas.mfa import TotpStepUpVerificationRequest
-from app.services.access_gateway import access_gateway, get_security_pipeline
+from app.services.access_gateway import (
+    AccessGatewayResponse,
+    access_gateway,
+    get_security_pipeline,
+)
 from app.services.context import client_ip as client_ip_module
 from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import UnavailableGeoResolver
@@ -115,7 +119,7 @@ async def _evaluate(
     settings: Settings = _SETTINGS,
     scheme: str = "https",
     hour: int = 12,
-):
+) -> AccessGatewayResponse:
     assert get_security_pipeline() is None
     profile = await session.get(Profile, user_id)
     assert profile is not None
