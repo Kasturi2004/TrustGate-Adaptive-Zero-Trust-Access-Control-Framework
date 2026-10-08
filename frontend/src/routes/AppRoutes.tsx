@@ -4,6 +4,7 @@ import { AuthEntryRoute } from "../auth/AuthEntryRoute.tsx";
 import { HomePage } from "../pages/HomePage.tsx";
 import { LoginPage } from "../pages/LoginPage.tsx";
 import { PlaceholderPage } from "../pages/PlaceholderPage.tsx";
+import { AccountPage } from "../pages/AccountPage.tsx";
 import { RequestAccessPage } from "../pages/RequestAccessPage.tsx";
 import { SignupPage } from "../pages/SignupPage.tsx";
 import { AdminRoute } from "./AdminRoute.tsx";
@@ -57,7 +58,14 @@ export function AppRoutes() {
           </ProtectedRoute>
         }
       />
-      <Route path="/account" element={<PlaceholderPage title="Account" />} />
+      <Route
+        path="/account"
+        element={
+          <ProtectedRoute>
+            <AccountPage />
+          </ProtectedRoute>
+        }
+      />
       <Route
         path="/admin/overview"
         element={

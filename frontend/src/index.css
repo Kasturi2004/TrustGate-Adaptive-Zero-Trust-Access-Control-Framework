@@ -2263,3 +2263,100 @@ a.admin-metric-card:hover {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+.account-enrollment-panel {
+  width: min(100%, 760px);
+  padding: clamp(22px, 4vw, 36px);
+}
+
+.account-enrollment-panel h2 {
+  margin: 8px 0 10px;
+  color: var(--text-primary);
+  font-size: clamp(1.35rem, 2.5vw, 1.8rem);
+}
+
+.account-enrollment-panel > p {
+  max-width: 62ch;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+.account-primary-action {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 18px;
+  text-decoration: none;
+}
+
+.account-enrollment-instructions {
+  display: grid;
+  gap: 10px;
+  margin: 20px 0;
+  padding-left: 24px;
+  color: var(--text-secondary);
+  line-height: 1.6;
+}
+
+.account-key-label,
+.account-verify-form label {
+  display: block;
+  margin: 18px 0 8px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.account-manual-key {
+  display: block;
+  overflow-wrap: anywhere;
+  padding: 14px 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  letter-spacing: 0.08em;
+  user-select: all;
+}
+
+.account-setup-note {
+  font-size: 0.9rem;
+}
+
+.account-verify-form {
+  max-width: 440px;
+  margin-top: 26px;
+}
+
+.account-verify-form input {
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 13px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 1.1rem;
+  letter-spacing: 0.22em;
+}
+
+.account-verify-form input:focus-visible {
+  outline: 2px solid var(--trust-primary);
+  outline-offset: 2px;
+}
+
+.account-restart-action {
+  margin-top: 16px;
+}
+
+@media (max-width: 600px) {
+  .account-enrollment-panel {
+    padding: 20px;
+  }
+
+  .account-primary-action {
+    width: 100%;
+    justify-content: center;
+  }
+}
