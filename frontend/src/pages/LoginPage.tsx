@@ -1,143 +1,117 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
-import { apiRequest } from "../api/client.ts";
-import { AuthPageLayout } from "../components/AuthPageLayout.tsx";
-import { supabase } from "../lib/supabase.ts";
-import { safeReturnPath } from "../auth/returnPath.ts";
-
-interface TokenResponse {
-  access_token: string;
-  refresh_token: string;
-}
-
-function parseTokenResponse(value: unknown): TokenResponse | null {
-  if (typeof value !== "object" || value === null) {
-    return null;
-  }
-
-  const { access_token, refresh_token } = value as Record<string, unknown>;
-  if (
-    typeof access_token !== "string" ||
-    access_token.trim() === "" ||
-    typeof refresh_token !== "string" ||
-    refresh_token.trim() === ""
-  ) {
-    return null;
-  }
-
-  return { access_token, refresh_token };
-}
-
-function loginError(status: number): string {
-  if (status === 401) {
-    return "Invalid email or password.";
-  }
-  if (status === 429) {
-    return "Too many login attempts. Please try again later.";
-  }
-  if (status === 422) {
-    return "Enter a valid email address and password.";
-  }
-  return "Unable to sign in right now. Please try again.";
-}
+import { ArrowRight, Eye, EyeOff, ShieldCheck } from "../components/Icons";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/useAuth";
+import { loginFailureMessage, loginVerificationMessage } from "./loginCopy";
 
 export function LoginPage() {
-  const location = useLocation();
+  const { signIn, configurationReady } = useAuth();
   const navigate = useNavigate();
-  const submittingRef = useRef(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submittingRef.current) {
-      return;
-    }
-
-    submittingRef.current = true;
-    setSubmitting(true);
-    setError(null);
-
+    setError("");
+    setBusy(true);
     try {
-      const response = await apiRequest("/auth/login", {
-        method: "POST",
-        body: { email: email.trim(), password },
-      });
-
-      if (!response.ok) {
-        setError(loginError(response.status));
-        return;
-      }
-
-      const tokens = parseTokenResponse(await response.json());
-      if (!tokens) {
-        setError("Unable to sign in right now. Please try again.");
-        return;
-      }
-
-      const { error: sessionError } = await supabase.auth.setSession(tokens);
-      if (sessionError) {
-        setError("Unable to sign in right now. Please try again.");
-        return;
-      }
-
-      navigate(safeReturnPath(location.state) ?? "/dashboard", { replace: true });
+      await signIn(email, password);
+      navigate("/", { replace: true });
     } catch {
-      setError("Unable to sign in right now. Please try again.");
+      setError(loginFailureMessage);
     } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
+      setBusy(false);
     }
   }
 
   return (
-    <AuthPageLayout
-      eyebrow="Secure sign in"
-      title="Welcome back"
-      description="Sign in to continue to TrustGate."
-      footer={
-        <p className="login-signup">
-          Don’t have an account? <Link to="/signup">Sign up</Link>
+    <main className="login-page">
+      <div className="login-backdrop" />
+      <section className="login-card">
+        <div className="login-brand">
+          <span className="brand-symbol">
+            <ShieldCheck size={20} />
+          </span>
+          <span>
+            Trust<span className="brand-accent">Gate</span>
+          </span>
+        </div>
+        <div className="login-kicker">ADMINISTRATOR CONSOLE</div>
+        <h1>Welcome back</h1>
+        <p className="login-description">
+          Sign in to review access decisions and security activity.
         </p>
-      }
-    >
-      <form className="login-form" onSubmit={handleSubmit}>
-        <label htmlFor="login-email">
-          Email
+        {!configurationReady && (
+          <div className="config-notice" role="status">
+            Set the public Supabase URL and anon key in the root environment
+            before signing in.
+          </div>
+        )}
+        <form onSubmit={(event) => void submit(event)}>
+          <label htmlFor="email">Work email</label>
           <input
-            id="login-email"
-            name="email"
+            id="email"
             type="email"
             autoComplete="username"
             required
             value={email}
-            onChange={(event) => setEmail(event.currentTarget.value)}
+            onChange={(event) => setEmail(event.target.value)}
+            placeholder="you@company.com"
+            aria-invalid={Boolean(error)}
           />
-        </label>
-        <label htmlFor="login-password">
-          Password
-          <input
-            id="login-password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(event) => setPassword(event.currentTarget.value)}
-          />
-        </label>
-        {error ? (
-          <p className="login-error" role="alert">
-            {error}
-          </p>
-        ) : null}
-        <button className="login-submit auth-submit" type="submit" disabled={submitting}>
-          {submitting ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
-    </AuthPageLayout>
+          <label htmlFor="password">Password</label>
+          <div className="password-field">
+            <input
+              id="password"
+              type={showPassword ? "text" : "password"}
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Your password"
+              aria-invalid={Boolean(error)}
+              aria-describedby={error ? "login-error" : undefined}
+            />
+            <button
+              type="button"
+              className="password-toggle"
+              onClick={() => setShowPassword((visible) => !visible)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {error && (
+            <div className="login-error" role="alert" id="login-error">
+              {error}
+            </div>
+          )}
+          <button
+            className="primary-button login-submit"
+            type="submit"
+            disabled={busy || !configurationReady}
+          >
+            {busy ? (
+              "Verifying…"
+            ) : (
+              <>
+                Continue securely <ArrowRight size={16} />
+              </>
+            )}
+          </button>
+        </form>
+        <div className="login-foot">
+          <ShieldCheck size={14} /> {loginVerificationMessage}
+        </div>
+      </section>
+      <p className="login-legal">
+        Access decisions remain enforced by the TrustGate backend.
+      </p>
+    </main>
   );
 }

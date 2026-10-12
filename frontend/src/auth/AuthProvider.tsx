@@ -1,73 +1,100 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import type { Session, User } from "@supabase/supabase-js";
-import { supabase } from "../lib/supabase.ts";
+import type { Session } from "@supabase/supabase-js";
+import { api } from "../api/client";
+import { AuthContext } from "./AuthContext";
+import type { AuthValue } from "./AuthContext";
+import { AuthSessionController } from "./AuthSessionController";
+import { supabase } from "./supabase";
 
-export interface AuthContextValue {
-  session: Session | null;
-  user: User | null;
-  loading: boolean;
-}
+const controller = new AuthSessionController((token, signal) =>
+  api.profile(token, signal),
+);
 
-const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-
-interface AuthProviderProps {
-  children: ReactNode;
-}
-
-export function AuthProvider({ children }: AuthProviderProps) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+export function AuthProvider({ children }: { children: ReactNode }) {
+  const snapshot = useSyncExternalStore(
+    controller.subscribe,
+    controller.getSnapshot,
+    controller.getSnapshot,
+  );
 
   useEffect(() => {
+    if (!supabase) {
+      controller.setSession(null);
+      return;
+    }
     let active = true;
-    let authStateChanged = false;
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      authStateChanged = true;
-      setSession(nextSession);
-      setUser(nextSession?.user ?? null);
-      setLoading(false);
+    let authEventCount = 0;
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, next) => {
+      authEventCount += 1;
+      if (active) controller.setSession(next as Session | null);
     });
-
-    void supabase.auth
-      .getSession()
-      .then(({ data }) => {
-        if (active && !authStateChanged) {
-          setSession(data.session);
-          setUser(data.session?.user ?? null);
+    const initialEventCount = authEventCount;
+    void supabase.auth.getSession().then(
+      ({ data }) => {
+        if (active && authEventCount === initialEventCount) {
+          controller.setSession(data.session as Session | null);
         }
-      })
-      .catch(() => {
-        if (active && !authStateChanged) {
-          setSession(null);
-          setUser(null);
+      },
+      () => {
+        if (active && authEventCount === initialEventCount) {
+          controller.failSessionResolution();
         }
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false);
-        }
-      });
-
+      },
+    );
     return () => {
       active = false;
-      subscription.unsubscribe();
+      listener.subscription.unsubscribe();
     };
   }, []);
 
-  return <AuthContext.Provider value={{ session, user, loading }}>{children}</AuthContext.Provider>;
-}
+  const value = useMemo<AuthValue>(
+    () => ({
+      session: snapshot.session as Session | null,
+      profile: snapshot.profile,
+      status: snapshot.status,
+      loading: snapshot.status === "loading" || snapshot.status === "resolving_profile",
+      configurationReady: supabase !== null,
+      async signIn(email, password) {
+        if (!supabase) {
+          throw new Error("Authentication is not configured for this frontend.");
+        }
+        const body = await api.login(email, password).catch(() => {
+          throw new Error("Sign-in request was rejected.");
+        });
+        if (
+          typeof body !== "object" ||
+          body === null ||
+          !("access_token" in body) ||
+          !("refresh_token" in body) ||
+          typeof body.access_token !== "string" ||
+          typeof body.refresh_token !== "string"
+        ) {
+          throw new Error("The authentication service returned an incomplete session.");
+        }
+        const result = await supabase.auth.setSession({
+          access_token: body.access_token,
+          refresh_token: body.refresh_token,
+        });
+        if (result.error) throw new Error(result.error.message);
+        if (!result.data.session) {
+          throw new Error("The authentication service did not establish a session.");
+        }
+        controller.setSession(result.data.session);
+      },
+      async signOut() {
+        if (supabase) {
+          const result = await supabase.auth.signOut();
+          if (result.error) throw new Error(result.error.message);
+        }
+        controller.setSession(null);
+      },
+      async refreshProfile() {
+        controller.retryProfile();
+      },
+    }),
+    [snapshot],
+  );
 
-// The provider and its consumer hook are intentionally colocated for this small auth boundary.
-// eslint-disable-next-line react-refresh/only-export-components
-export function useAuth(): AuthContextValue {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
-  return context;
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -1,21 +1,16 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
+import React from "react";
+import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import { AuthProvider } from "./auth/AuthProvider.tsx";
-import { App } from "./App.tsx";
-import "./index.css";
+import { AuthProvider } from "./auth/AuthProvider";
+import { AppRoutes } from "./routes/AppRoutes";
+import "./styles/global.css";
 
-const root = document.getElementById("root");
-if (!root) {
-  throw new Error("Root element #root is missing");
-}
-
-createRoot(root).render(
-  <StrictMode>
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <App />
+        <AppRoutes />
       </AuthProvider>
     </BrowserRouter>
-  </StrictMode>,
+  </React.StrictMode>,
 );
