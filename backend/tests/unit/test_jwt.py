@@ -20,6 +20,7 @@ _SUPABASE_URL = "https://test-project.supabase.co"
 _ISSUER = f"{_SUPABASE_URL}/auth/v1"
 _FUTURE_EXPIRY = 2_000_000_000
 _KID = "unit-test-es256-key"
+_HS256_SECRET = "unit-test-supabase-jwt-secret-with-safe-length"
 
 
 def _settings(supabase_url: str | None = _SUPABASE_URL) -> Settings:
@@ -27,6 +28,7 @@ def _settings(supabase_url: str | None = _SUPABASE_URL) -> Settings:
         app_env="test",
         cors_allowed_origin="http://localhost:5173",
         supabase_url=supabase_url,
+        supabase_jwt_secret=None,
     )
 
 
@@ -43,10 +45,13 @@ def _jwk(private_key: ec.EllipticCurvePrivateKey, kid: str = _KID) -> dict[str, 
 def _token(
     private_key: ec.EllipticCurvePrivateKey,
     *,
-    sub: str | None = str(_USER_ID),
+    sub: object | None = str(_USER_ID),
     session_id: str | None = str(_SESSION_ID),
     audience: str = "authenticated",
-    expiry: int | None = _FUTURE_EXPIRY,
+    expiry: object | None = _FUTURE_EXPIRY,
+    issued_at: object | None = None,
+    not_before: object | None = None,
+    jwt_id: object | None = None,
     issuer: str = _ISSUER,
     kid: str | None = _KID,
     algorithm: str = "ES256",
@@ -58,6 +63,12 @@ def _token(
         claims["session_id"] = session_id
     if expiry is not None:
         claims["exp"] = expiry
+    if issued_at is not None:
+        claims["iat"] = issued_at
+    if not_before is not None:
+        claims["nbf"] = not_before
+    if jwt_id is not None:
+        claims["jti"] = jwt_id
     headers: dict[str, str] = {}
     if kid is not None:
         headers["kid"] = kid
@@ -113,6 +124,68 @@ def test_valid_es256_token_returns_uuid_identity_and_ignores_role_claims(
     assert identity.id == _USER_ID
     assert identity.session_id == _SESSION_ID
     assert not hasattr(identity, "role")
+
+
+def test_valid_hs256_token_uses_only_the_configured_supabase_jwt_secret() -> None:
+    token = jwt.encode(
+        {
+            "sub": str(_USER_ID),
+            "session_id": str(_SESSION_ID),
+            "aud": "authenticated",
+            "iss": _ISSUER,
+            "exp": _FUTURE_EXPIRY,
+            "role": "ADMIN",
+        },
+        _HS256_SECRET,
+        algorithm="HS256",
+    )
+    settings = _settings().model_copy(update={"supabase_jwt_secret": _HS256_SECRET})
+
+    assert validate_access_token(token, settings=settings) == AuthenticatedUser(
+        id=_USER_ID, session_id=_SESSION_ID
+    )
+
+
+def test_hs256_token_is_rejected_when_secret_is_not_configured() -> None:
+    token = jwt.encode(
+        {
+            "sub": str(_USER_ID),
+            "session_id": str(_SESSION_ID),
+            "aud": "authenticated",
+            "iss": _ISSUER,
+            "exp": _FUTURE_EXPIRY,
+        },
+        _HS256_SECRET,
+        algorithm="HS256",
+    )
+
+    with pytest.raises(InvalidJWTError) as error:
+        validate_access_token(
+            token,
+            settings=_settings().model_copy(update={"supabase_jwt_secret": None}),
+        )
+
+    assert error.value.category == "jwt_hs256_secret_unconfigured"
+
+
+def test_hs256_signature_must_match_the_configured_supabase_secret() -> None:
+    token = jwt.encode(
+        {
+            "sub": str(_USER_ID),
+            "session_id": str(_SESSION_ID),
+            "aud": "authenticated",
+            "iss": _ISSUER,
+            "exp": _FUTURE_EXPIRY,
+        },
+        "different-test-key-that-is-not-the-configured-key",
+        algorithm="HS256",
+    )
+    settings = _settings().model_copy(update={"supabase_jwt_secret": _HS256_SECRET})
+
+    with pytest.raises(InvalidJWTError) as error:
+        validate_access_token(token, settings=settings)
+
+    assert error.value.category == "jwt_signature_invalid"
 
 
 @pytest.mark.parametrize("token", [None, ""])
@@ -198,6 +271,33 @@ def test_malformed_session_id_is_rejected(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(InvalidJWTError, match="Invalid access token"):
         validate_access_token(token, settings=_settings())
+
+
+@pytest.mark.parametrize(
+    ("token_claim", "expected_category"),
+    [
+        ({"expiry": "invalid"}, "jwt_exp_type_invalid"),
+        ({"issued_at": "invalid"}, "jwt_iat_invalid"),
+        ({"not_before": "invalid"}, "jwt_nbf_type_invalid"),
+        ({"issued_at": _FUTURE_EXPIRY}, "jwt_iat_in_future"),
+        ({"not_before": _FUTURE_EXPIRY}, "jwt_nbf_in_future"),
+        ({"sub": 42}, "jwt_subject_type_invalid"),
+        ({"jwt_id": 42}, "jwt_jti_type_invalid"),
+    ],
+)
+def test_invalid_claim_values_have_sanitized_failure_categories(
+    monkeypatch: pytest.MonkeyPatch,
+    token_claim: dict[str, object],
+    expected_category: str,
+) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    token = _token(private_key, **token_claim)  # type: ignore[arg-type]
+
+    with pytest.raises(InvalidJWTError) as error:
+        validate_access_token(token, settings=_settings())
+
+    assert error.value.category == expected_category
 
 
 def test_refreshed_access_tokens_keep_the_same_session_identity(

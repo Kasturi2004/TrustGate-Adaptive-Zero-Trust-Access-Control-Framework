@@ -1,5 +1,6 @@
 """FastAPI dependencies for authenticated request identities."""
 
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Annotated, Literal
@@ -19,6 +20,13 @@ from app.services.security_events import record_event
 
 _bearer_scheme = HTTPBearer(auto_error=False)
 Role = Literal["USER", "ADMIN"]
+_auth_logger = logging.getLogger("trustgate.auth")
+
+
+def _log_auth_failure(request: Request, category: str) -> None:
+    """Log only the failure category and request ID; never log credentials or claims."""
+    request_id = getattr(request.state, "request_id", "unknown")
+    _auth_logger.warning("authentication_failed category=%s request_id=%s", category, request_id)
 
 
 def get_clock() -> Clock:
@@ -45,6 +53,7 @@ def _not_authenticated() -> HTTPException:
 
 
 async def get_verified_identity(
+    request: Request,
     credentials: Annotated[
         HTTPAuthorizationCredentials | None,
         Depends(_bearer_scheme),
@@ -52,10 +61,12 @@ async def get_verified_identity(
 ) -> AuthenticatedUser:
     """Extract a bearer token and validate its cryptographic identity."""
     if credentials is None or credentials.scheme.lower() != "bearer":
+        _log_auth_failure(request, "authorization_missing_or_invalid")
         raise _not_authenticated()
     try:
         return await run_in_threadpool(validate_access_token, credentials.credentials)
-    except InvalidJWTError:
+    except InvalidJWTError as exc:
+        _log_auth_failure(request, exc.category)
         raise _not_authenticated() from None
 
 
@@ -71,12 +82,14 @@ async def get_db_session() -> AsyncIterator[AsyncSession]:
 
 
 async def get_current_user(
+    request: Request,
     identity: Annotated[AuthenticatedUser, Depends(get_verified_identity)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> AuthenticatedPrincipal:
     """Resolve a verified token subject to its non-deleted database profile."""
     profile = await ProfileRepository(session).get_by_id(identity.id)
     if profile is None or profile.is_deleted:
+        _log_auth_failure(request, "profile_missing_or_deleted")
         raise _not_authenticated()
     return AuthenticatedPrincipal(
         id=identity.id,

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     app_env: AppEnv
     cors_allowed_origin: str
 
-    # Supabase Auth settings. They are separate from DATABASE_URL and unused here.
+    # Supabase Auth settings are separate from DATABASE_URL.
     supabase_url: str | None = None
     supabase_anon_key: str | None = None
     supabase_jwt_secret: str | None = None

@@ -27,6 +27,7 @@ _SUPABASE_URL = "https://test-project.supabase.co"
 _USER_ID = UUID("07b4812d-6615-40fd-84e0-9612a7fc1b12")
 _OTHER_USER_ID = UUID("a87173a6-708e-459c-a1d8-3b61f7ce2a4a")
 _FUTURE_EXPIRY = 2_000_000_000
+_HS256_SECRET = "unit-test-supabase-jwt-secret-with-safe-length"
 
 
 def _settings() -> Settings:
@@ -34,6 +35,7 @@ def _settings() -> Settings:
         app_env="test",
         cors_allowed_origin="http://localhost:5173",
         supabase_url=_SUPABASE_URL,
+        supabase_jwt_secret=_HS256_SECRET,
     )
 
 
@@ -112,7 +114,10 @@ def test_profile_role_is_used_instead_of_jwt_role(monkeypatch: pytest.MonkeyPatc
     assert response.json()["role"] == "USER"
 
 
-def test_missing_authorization_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_authorization_returns_401_and_logs_only_a_category(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     session = AsyncMock(spec=AsyncSession)
     client = _client(session, monkeypatch)
 
@@ -121,6 +126,7 @@ def test_missing_authorization_returns_401(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.status_code == 401
     assert response.json()["error"]["message"] == "Not authenticated"
     assert response.json()["error"]["code"] == "UNAUTHENTICATED"
+    assert "category=authorization_missing_or_invalid" in caplog.text
     session.get.assert_not_awaited()
 
 
@@ -136,6 +142,60 @@ def test_malformed_or_invalid_bearer_token_returns_401(
 
     assert response.status_code == 401
     assert response.json()["error"]["message"] == "Not authenticated"
+    session.get.assert_not_awaited()
+
+
+def test_supabase_hs256_access_token_resolves_the_database_profile_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.get.return_value = _profile(role="ADMIN")
+    client = _client(session, monkeypatch)
+    token = jwt.encode(
+        {
+            "sub": str(_USER_ID),
+            "session_id": str(_USER_ID),
+            "aud": "authenticated",
+            "iss": f"{_SUPABASE_URL}/auth/v1",
+            "exp": _FUTURE_EXPIRY,
+            "role": "USER",
+        },
+        _HS256_SECRET,
+        algorithm="HS256",
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "ADMIN"
+    session.get.assert_awaited_once_with(Profile, _USER_ID)
+
+
+def test_malformed_issued_at_claim_logs_only_its_failure_category(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    client = _client(session, monkeypatch)
+    token = jwt.encode(
+        {
+            "sub": str(_USER_ID),
+            "session_id": str(_USER_ID),
+            "aud": "authenticated",
+            "iss": f"{_SUPABASE_URL}/auth/v1",
+            "exp": _FUTURE_EXPIRY,
+            "iat": {"unexpected": "object"},
+        },
+        _HS256_SECRET,
+        algorithm="HS256",
+    )
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert response.status_code == 401
+    assert "category=jwt_iat_invalid" in caplog.text
+    assert token not in caplog.text
+    assert _HS256_SECRET not in caplog.text
     session.get.assert_not_awaited()
 
 

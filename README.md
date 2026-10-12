@@ -38,30 +38,24 @@ The backend owns context collection, scores, roles, policy decisions, and resour
 - A protected Operations Dashboard requiring a successful, current-session access request that can be consumed once.
 - Employee access history and current-device recognition, including the ability to forget a recognized device.
 - Persisted security events with append-only protections for the application runtime role.
-- Admin dashboard metrics, filtered security-event browsing, event investigation, behavioral risk indicators, and available device/access/security context.
+- Administrator APIs for dashboard metrics, filtered security-event browsing, investigations, and behavioral risk indicators.
 
 The device-health signal describes the request's HTTPS status and parsed browser/OS family and version. It does not inspect antivirus, patch level, disk encryption, endpoint compromise, or EDR/MDM status.
 
-## 4. Employee Experience
+## 4. Frontend Status
 
-1. Sign up or sign in, then open the employee Dashboard.
-2. Choose **Request Access** to submit a request for Operations Dashboard.
-3. TrustGate evaluates the request using the current server-side context and policy. The result can be ALLOW, STEP-UP, or BLOCK; it is not guaranteed to be the same for every request.
-4. If STEP-UP is required, enter a current six-digit code from an authenticator app. A successful verification allows the associated request to proceed.
-5. Open Operations Dashboard. The backend checks the user's identity, session, request outcome, and one-time request state before returning the protected resource.
-6. Where applicable, choose to recognize the current device after access has been granted. Recognition affects future familiarity evaluations and can be removed in Account settings.
-7. Review prior requests in **Access History**, manage authenticator and device-recognition settings in **Account**, and use **Log out** to end the Supabase session.
+The repository includes an administrator console for reviewing dashboard metrics, audit events, investigations, users, devices, policy settings, and behavioral risk indicators. The console uses Supabase Auth for sign-in and the TrustGate backend to verify profiles and load administrator data. Authentication, authorization, and access decisions continue to be enforced server-side.
 
-## 5. Admin Experience
+## 5. Administrator APIs
 
-Administrators have an Admin Dashboard with access/security metrics and recent suspicious activity. The Security Events view supports filtering and pagination; an event can be opened for investigation with its available access and security context. The interface also presents behavioral indicators derived from recent blocks and failed TOTP attempts.
+The administrator console uses administrator-protected APIs for metrics, security-event queries, investigation details, and behavioral indicators.
 
 These are focused review tools. TrustGate does not provide a full SOC workflow, alert triage system, or case-management platform.
 
 ## 6. Security Model
 
 - **Server-authoritative access:** The backend validates the Supabase JWT, loads the profile role, collects context, evaluates the active policy, and authorizes the protected resource.
-- **Role checks:** Employee and admin routes and API operations enforce roles on the server. Hiding a frontend route is not the authorization boundary.
+- **Role checks:** API operations enforce roles on the server. Client-side presentation is not an authorization boundary.
 - **Ownership and session binding:** Access requests are tied to a user and authentication session. Protected-resource redemption and device recognition check the authenticated owner and session.
 - **One-time redemption:** A successful access request is atomically consumed so it cannot be replayed to reopen the protected resource. STEP-UP requests require successful MFA before redemption.
 - **MFA safeguards:** TOTP secrets are encrypted at rest with AES-256-GCM. Verification uses challenge and replay protections; plaintext OTP codes are not persisted. The encryption key must be kept stable and protected because existing credentials depend on it.
@@ -91,12 +85,11 @@ Location is a coarse IP-derived country/subdivision comparison, not precise geol
 
 ## 8. Technology Stack
 
-- **Frontend:** React 19, TypeScript, Vite, React Router, Supabase JavaScript client.
 - **Backend:** Python 3.12, FastAPI, Pydantic v2, Uvicorn.
 - **Database:** PostgreSQL, with Supabase used for hosted Postgres and Supabase Auth.
 - **Persistence and migrations:** SQLAlchemy 2 async ORM, asyncpg driver, Alembic.
 - **Authentication and MFA:** Supabase Auth JWTs and TOTP compatible with authenticator apps (`pyotp`).
-- **Quality tooling:** pytest, Vitest, Ruff, mypy, ESLint, Prettier, and TypeScript compiler checks.
+- **Quality tooling:** pytest, Ruff, and mypy.
 
 ## 9. Project Structure
 
@@ -106,7 +99,7 @@ backend/
   alembic/             Database migration environment and ordered revisions
   tests/               Unit, API, security, and PostgreSQL integration tests
 frontend/
-  src/                 React app, routes, pages, API clients, and tests
+  src/                 React administrator console, authentication, and API client
 scripts/               Administrative utility scripts
 docs/                  Project documents and architecture decisions
 .github/workflows/     CI workflows
@@ -114,7 +107,7 @@ docs/                  Project documents and architecture decisions
 
 ## 10. Setup and Prerequisites
 
-Prerequisites: Python 3.12, Node.js 22 or newer, npm, and access to a Supabase project (Auth and PostgreSQL) or compatible configured services. GNU Make is optional.
+Prerequisites: Python 3.12 and access to a Supabase project (Auth and PostgreSQL) or compatible configured services. GNU Make is optional.
 
 From the repository root, create a local environment file and install dependencies:
 
@@ -123,17 +116,15 @@ Copy-Item .env.example .env
 py -3.12 -m venv backend\.venv
 backend\.venv\Scripts\python -m pip install --upgrade pip
 backend\.venv\Scripts\python -m pip install -e "backend[dev]"
-npm ci --prefix frontend
 ```
 
 On macOS/Linux, create the environment with `python3.12 -m venv backend/.venv` and use `backend/.venv/bin/python` in place of `backend\.venv\Scripts\python`.
 
-The backend reads `.env` from the repository root. Vite also reads frontend variables from that root via its configured `envDir`. Copy `.env.example` as a names-only template and enter local values there; never commit `.env` or put backend secrets in `VITE_` variables.
+The backend reads `.env` from the repository root. Copy `.env.example` as a names-only template and enter local values there; never commit `.env` or expose backend secrets to a client application.
 
 Configuration names, with no values shown:
 
 - **Required for API startup:** `APP_ENV`, `CORS_ALLOWED_ORIGIN`.
-- **Required by the frontend:** `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`.
 - **Supabase Auth backend:** `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_JWT_SECRET`.
 - **Database features and migrations:** `DATABASE_URL`; optionally `MIGRATION_DATABASE_URL` for a separate migration-owner connection.
 - **Access/device and protected security features:** `DEVICE_HASH_SECRET`, `RATE_LIMIT_KEY_SECRET`, `SECURITY_EVENT_KEY_SECRET`, `TOTP_SECRET_ENCRYPTION_KEY` as required by the feature being used.
@@ -141,9 +132,9 @@ Configuration names, with no values shown:
 
 Optional settings for trusted proxies, GeoIP, SMTP, and local development are documented by name in `.env.example` and should only be configured when the corresponding deployment setup is in place.
 
-## 11. Running the Project
+## 11. Running the Application
 
-Start the backend and frontend in separate terminals from the repository root. The backend command below uses the Windows virtualenv path; on macOS/Linux substitute `backend/.venv/bin/python`.
+The backend command below uses the Windows virtualenv path; on macOS/Linux substitute `backend/.venv/bin/python`.
 
 Backend:
 
@@ -151,15 +142,18 @@ Backend:
 backend\.venv\Scripts\python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000 --app-dir backend
 ```
 
-Frontend:
+The API runs at `http://127.0.0.1:8000`. Configure `CORS_ALLOWED_ORIGIN` for the trusted client origin when one is deployed. The liveness endpoint is `GET /health`; it returns `{"status":"ok"}` without connecting to the database. Interactive API documentation is available at `/docs` outside production; OpenAPI routes are disabled when `APP_ENV=production`.
+
+With GNU Make installed, `make dev-backend` provides the backend development command.
+
+Frontend (from `frontend/`):
 
 ```powershell
-npm --prefix frontend run dev
+npm ci
+npm run dev -- --host 127.0.0.1
 ```
 
-The frontend runs at `http://localhost:5173` and the API at `http://127.0.0.1:8000`. Set `CORS_ALLOWED_ORIGIN` to the exact frontend origin. The liveness endpoint is `GET /health`; it returns `{"status":"ok"}` without connecting to the database. Interactive API documentation is available at `/docs` outside production; OpenAPI routes are disabled when `APP_ENV=production`.
-
-With GNU Make installed, `make dev-backend` and `make dev-frontend` provide the repository's development commands.
+The Vite server runs at `http://127.0.0.1:5173`. The frontend reads `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` from the repository-root `.env`; only the Supabase URL and anon key are public browser settings. Keep database URLs, JWT secrets, and other backend credentials server-side.
 
 ## 12. Database and Migrations
 
@@ -186,22 +180,11 @@ Run backend checks from `backend/`:
 .\.venv\Scripts\python -m mypy
 ```
 
-Run frontend checks from the repository root:
-
-```powershell
-npm --prefix frontend run test
-npm --prefix frontend run lint
-npm --prefix frontend run typecheck
-npm --prefix frontend run build
-```
-
-Backend PostgreSQL integration tests require `TEST_DATABASE_URL` to reference a dedicated disposable test database. The CI workflow provisions PostgreSQL 16 for these tests. Frontend tests run with Vitest; lint runs ESLint and Prettier checks; typecheck and build use the TypeScript compiler.
+Backend PostgreSQL integration tests require `TEST_DATABASE_URL` to reference a dedicated disposable test database. The CI workflow provisions PostgreSQL 16 for these tests.
 
 ## 14. Demo Flow
 
-**Employee:** Sign in → Dashboard → Request Access → review the evaluation → complete Authenticator STEP-UP when required → open Operations Dashboard → recognize the device where offered → review Access History.
-
-**Admin:** Sign in with an administrator account → Admin Dashboard → Security Events → inspect suspicious activity → open an event investigation → review behavioral indicators and available access context.
+The administrator console is available for reviewing persisted security events and access decisions. Backend access-evaluation and API behavior can also be exercised through the backend test suite or development API documentation where enabled.
 
 A **BLOCK** result is a valid policy outcome and can be shown as part of the demo. STEP-UP is conditional; it is not produced on every request.
 
@@ -220,10 +203,10 @@ Its device-health signal cannot assess endpoint compromise or installed security
 ## 16. Security and Deployment Notes
 
 - Never commit `.env` or publish credentials. Use strong, independently generated secrets for each backend key and store them in a deployment secret manager.
-- Protect Supabase Auth keys and PostgreSQL connection strings; never include server-only credentials in the frontend bundle.
+- Protect Supabase Auth keys and PostgreSQL connection strings; never include server-only credentials in a client bundle.
 - Keep `TOTP_SECRET_ENCRYPTION_KEY` available and backed up securely. Changing or losing it makes existing encrypted TOTP credentials unreadable; key rotation requires an application-supported procedure.
 - Use HTTPS in deployed environments and configure trusted proxy settings only for known proxy hops.
-- Configure `CORS_ALLOWED_ORIGIN` to the exact deployed frontend origin; wildcard origins are rejected.
+- Configure `CORS_ALLOWED_ORIGIN` to the exact trusted client origin; wildcard origins are rejected.
 - Review and apply database migrations deliberately, using appropriately protected migration credentials.
 - TrustGate is a prototype and needs additional threat modeling, security review, monitoring, and deployment hardening before production use.
 
