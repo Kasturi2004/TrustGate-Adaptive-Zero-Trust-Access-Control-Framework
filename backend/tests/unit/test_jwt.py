@@ -1,6 +1,7 @@
 """Unit tests for Supabase ES256 access-token validation."""
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -311,6 +312,49 @@ def test_refreshed_access_tokens_keep_the_same_session_identity(
     )
 
     assert first == refreshed == AuthenticatedUser(id=_USER_ID, session_id=_SESSION_ID)
+
+
+def test_slightly_future_issued_at_is_within_the_bounded_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    issued_at = int(datetime.now(UTC).timestamp()) + 5
+
+    user = validate_access_token(_token(private_key, issued_at=issued_at), settings=_settings())
+
+    assert user == AuthenticatedUser(id=_USER_ID, session_id=_SESSION_ID)
+
+
+def test_materially_future_issued_at_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    issued_at = int(datetime.now(UTC).timestamp()) + 11
+
+    with pytest.raises(InvalidJWTError) as error:
+        validate_access_token(_token(private_key, issued_at=issued_at), settings=_settings())
+
+    assert error.value.category == "jwt_iat_in_future"
+
+
+def test_expiration_and_not_before_do_not_use_issued_at_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    private_key = _new_key()
+    _install_jwks(monkeypatch, {"keys": [_jwk(private_key)]})
+    now = int(datetime.now(UTC).timestamp())
+    expired = _token(private_key, expiry=now - 5)
+    not_yet_valid = _token(private_key, not_before=now + 5)
+
+    with pytest.raises(InvalidJWTError) as expired_error:
+        validate_access_token(expired, settings=_settings())
+    with pytest.raises(InvalidJWTError) as nbf_error:
+        validate_access_token(not_yet_valid, settings=_settings())
+
+    assert expired_error.value.category == "jwt_expired"
+    assert nbf_error.value.category == "jwt_nbf_in_future"
 
 
 def test_non_uuid_subject_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -264,11 +264,6 @@ async def evaluate_access(
         )
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred.",
-        ) from None
 
     return AccessEvaluateResponse(
         evaluation_id=result.evaluation_id,

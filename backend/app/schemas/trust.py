@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 FactorName = Literal[
     "device_familiarity",
@@ -15,7 +15,7 @@ FactorName = Literal[
 ]
 
 DeviceFamiliaritySignal = Literal["known_device", "unknown_device"]
-DeviceHealthSignal = Literal["healthy", "partially_healthy", "unhealthy"]
+DeviceHealthSignal = Literal["healthy", "partially_healthy", "unhealthy", "unknown"]
 LocationSignal = Literal["expected_region", "new_region", "unavailable"]
 TimeSignal = Literal["within_normal_window", "outside_normal_window"]
 
@@ -27,6 +27,7 @@ class TrustSignals(BaseModel):
 
     device_familiarity_raw: DeviceFamiliaritySignal
     device_health_raw: DeviceHealthSignal
+    device_health_score: Decimal | None = Field(default=None, ge=0, le=100)
     location_raw: LocationSignal
     time_raw: TimeSignal
 

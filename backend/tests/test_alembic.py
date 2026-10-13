@@ -62,6 +62,16 @@ def test_alembic_has_the_initial_role_rls_audit_and_seed_revisions() -> None:
         "20261008_10_access_request_consumption.py",
         "20261008_11_access_request_session_binding.py",
         "20261013_12_authenticator_onboarding.py",
+        "20261013_13_device_health_unknown.py",
     ]
+    posture_revision = (
+        BACKEND_ROOT / "alembic" / "versions" / "20261013_13_device_health_unknown.py"
+    ).read_text(encoding="utf-8")
+    assert "'unknown'" in posture_revision
+    assert "device_health_values" in posture_revision
+    assert "ck_context_signals_ck_context_signals_device_health_values" in posture_revision
+    assert 'op.f("ck_context_signals_device_health_values")' in posture_revision
+    assert "UPDATE public.context_signals" not in posture_revision
+    assert "Cannot downgrade" in posture_revision
     env_source = (BACKEND_ROOT / "alembic" / "env.py").read_text(encoding="utf-8")
     assert "from app.db.models import target_metadata" in env_source

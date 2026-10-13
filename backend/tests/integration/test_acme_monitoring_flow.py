@@ -33,8 +33,10 @@ from app.db.repositories.policy_version import PolicyVersionRepository
 from app.db.session import create_async_engine_for_url
 from app.main import create_app
 from app.services.context import client_ip as client_ip_module
+from app.services.context import collector as context_collector
 from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import UnavailableGeoResolver, get_geo_resolver
+from app.services.device_health_assessment import CHECK_WEIGHTS, EvidenceObservation
 from cryptography.hazmat.primitives.asymmetric import ec
 from fastapi.testclient import TestClient
 from jwt import PyJWKClient
@@ -62,6 +64,46 @@ _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
+_TEST_POSTURE_PROOF = b"integration-test-posture-proof"
+
+
+class _VerifiedTestPostureProvider:
+    """Test-only evidence source used to exercise existing allow/step-up flows."""
+
+    async def collect(
+        self, *, device_binding: str | None, now: datetime
+    ) -> tuple[EvidenceObservation, ...]:
+        if device_binding is None:
+            return ()
+        return tuple(
+            EvidenceObservation(
+                check=check,
+                state="PASS",
+                source="integration-fixture",
+                observed_at=now,
+                device_binding=device_binding,
+                proof=_TEST_POSTURE_PROOF,
+            )
+            for check in CHECK_WEIGHTS
+        )
+
+
+class _VerifiedTestPostureProof:
+    def verify(self, observation: EvidenceObservation) -> bool:
+        return observation.proof == _TEST_POSTURE_PROOF
+
+
+def _enable_test_posture_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        context_collector,
+        "get_device_health_evidence_provider",
+        _VerifiedTestPostureProvider,
+    )
+    monkeypatch.setattr(
+        context_collector,
+        "get_device_health_evidence_verifier",
+        _VerifiedTestPostureProof,
+    )
 
 
 def _token(user_id: UUID, *, session_id: UUID) -> str:
@@ -84,6 +126,7 @@ def test_acme_access_is_redeemed_and_visible_in_admin_event_feed(
     migrated_test_database: ScratchDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_test_posture_provider(monkeypatch)
     employee_id, admin_id = uuid4(), uuid4()
     employee_session_id = uuid4()
     asyncio.run(
@@ -372,6 +415,7 @@ def test_acme_document_rules_mfa_redemption_and_admin_event_chain(
     migrated_test_database: ScratchDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_test_posture_provider(monkeypatch)
     employee_id, admin_id, other_id = uuid4(), uuid4(), uuid4()
     employee_session_id = uuid4()
     for user_id, label in (

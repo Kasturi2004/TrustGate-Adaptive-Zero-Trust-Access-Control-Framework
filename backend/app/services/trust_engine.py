@@ -17,6 +17,8 @@ _DEVICE_HEALTH_SCORES = {
     "healthy": Decimal("100"),
     "partially_healthy": Decimal("60"),
     "unhealthy": Decimal("10"),
+    # Unverified posture is not evidence of a passing device-health check.
+    "unknown": Decimal("0"),
 }
 _LOCATION_SCORES = {
     "expected_region": Decimal("100"),
@@ -50,7 +52,11 @@ def evaluate(signals: TrustSignals, weights: TrustWeights) -> TrustEvaluationRes
 
     factors: list[TrustFactorResult] = []
     for factor_name, raw_value, score_map, weight in inputs:
-        normalized_score = score_map[raw_value]
+        normalized_score = (
+            signals.device_health_score
+            if factor_name == "device_health" and signals.device_health_score is not None
+            else score_map[raw_value]
+        )
         contribution = normalized_score * weight
         factors.append(
             TrustFactorResult(

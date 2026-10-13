@@ -1,6 +1,7 @@
 """Validation of Supabase-issued access tokens."""
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from functools import lru_cache
 from urllib.parse import urlsplit
 from uuid import UUID
@@ -17,6 +18,8 @@ _JWKS_PATH = "/auth/v1/.well-known/jwks.json"
 _ISSUER_PATH = "/auth/v1"
 _JWKS_CACHE_TTL_SECONDS = 300
 _JWKS_FETCH_TIMEOUT_SECONDS = 5
+# Keep the existing small issuance-skew allowance scoped to iat only.
+_IAT_LEEWAY_SECONDS = 10
 
 
 class InvalidJWTError(ValueError):
@@ -156,8 +159,22 @@ def validate_access_token(
             algorithms=[algorithm],
             audience=_AUDIENCE,
             issuer=issuer,
-            options={"require": ["exp", "aud", "sub", "iss", "session_id"]},
+            leeway=0,
+            options={
+                "require": ["exp", "aud", "sub", "iss", "session_id"],
+                "verify_iat": False,
+            },
         )
+        if "iat" in claims:
+            try:
+                issued_at = int(claims["iat"])
+            except (TypeError, ValueError, OverflowError):
+                raise jwt.InvalidIssuedAtError(
+                    "Issued At claim (iat) must be an integer."
+                ) from None
+            now = datetime.now(UTC).timestamp()
+            if issued_at > now + _IAT_LEEWAY_SECONDS:
+                raise jwt.ImmatureSignatureError("The token is not yet valid (iat)")
     except jwt.ExpiredSignatureError:
         raise InvalidJWTError("Invalid access token", category="jwt_expired") from None
     except jwt.InvalidIssuerError:

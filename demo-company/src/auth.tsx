@@ -1,5 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { QRCodeSVG } from "qrcode.react";
+import { requestTotpEnrollment } from "./enrollment";
+import type { PortalSession } from "./session";
 import brandLogo from "../icon/bVoir Technology Logo-Photoroom.svg";
 import darkBrandLogo from "../icon/bVoir Technology Dark Logo.svg";
 
@@ -8,11 +10,7 @@ const API = (import.meta.env.DEV ? "/api" : import.meta.env.VITE_API_BASE_URL ||
   "",
 );
 
-export type AuthSession = {
-  token: string;
-  refresh_token?: string;
-  user?: { email?: string };
-};
+export type AuthSession = PortalSession;
 
 type AuthProfile = {
   id: string;
@@ -68,15 +66,20 @@ function AuthLayout({
 }
 
 async function request<T>(path: string, init: RequestInit = {}, token?: string): Promise<T> {
-  const response = await fetch(API + path, {
-    ...init,
-    headers: {
-      Accept: "application/json",
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...init.headers,
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(API + path, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...init.headers,
+      },
+    });
+  } catch {
+    throw new Error("Unable to reach TrustGate. Check your connection and try again.");
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const message = response.status === 401 && token
@@ -342,14 +345,13 @@ export function AuthenticatorSetup({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let current = true;
-    request<{ otpauth_uri: string; manual_entry_key: string }>(
-      "/auth/mfa/totp/enrollment",
-      { method: "POST" },
-      session.token,
-    )
+    setLoading(true);
+    setError("");
+    requestTotpEnrollment(API, session)
       .then((result) => {
         if (current) {
           setUri(result.otpauth_uri);
@@ -365,7 +367,15 @@ export function AuthenticatorSetup({
     return () => {
       current = false;
     };
-  }, [session.token]);
+  }, [session.token, attempt]);
+
+  function retryEnrollment() {
+    setUri("");
+    setManualKey("");
+    setError("");
+    setLoading(true);
+    setAttempt((value) => value + 1);
+  }
 
   async function verify(event: FormEvent) {
     event.preventDefault();
@@ -400,6 +410,12 @@ export function AuthenticatorSetup({
           Scan this code with an authenticator app, then enter its six-digit code to finish setup.
         </p>
         {loading && <div className="notice" role="status">Preparing your secure setup…</div>}
+        {!loading && !uri && error && <div className="error" role="alert">{error}</div>}
+        {!loading && !uri && error && (
+          <button className="auth-secondary" type="button" onClick={retryEnrollment}>
+            Retry authenticator setup
+          </button>
+        )}
         {!loading && uri && (
           <>
             <div className="qr-frame" aria-label="Authenticator enrollment QR code">
@@ -432,7 +448,6 @@ export function AuthenticatorSetup({
             </form>
           </>
         )}
-        {!loading && !uri && error && <div className="error" role="alert">{error}</div>}
         <button className="auth-secondary" type="button" onClick={onSignOut}>Sign out</button>
       </section>
     </main>

@@ -24,6 +24,7 @@ from app.db.repositories.device import DeviceRepository
 from app.services.context.device_familiarity import (
     DeviceFamiliarityResult,
     collect_device_familiarity,
+    device_token_hash,
 )
 from app.services.context.health import (
     DeviceHealthResult,
@@ -36,6 +37,12 @@ from app.services.context.location import (
     evaluate_location_normality,
 )
 from app.services.context.timebaseline import TimeBaselineResult, evaluate_time_normality
+from app.services.device_health_assessment import (
+    DeviceHealthAssessment,
+    assess_device_health,
+    get_device_health_evidence_provider,
+    get_device_health_evidence_verifier,
+)
 
 IPAddress = IPv4Address | IPv6Address
 
@@ -47,7 +54,8 @@ class ContextSnapshot:
     captured_at: datetime
     client_ip: IPAddress | None
     device_familiarity: DeviceFamiliarityResult
-    device_health: DeviceHealthResult
+    browser_context: DeviceHealthResult
+    posture_assessment: DeviceHealthAssessment
     location_normality: LocationResult
     time_normality: TimeBaselineResult
     connection_secure: bool
@@ -59,11 +67,13 @@ class ContextSnapshot:
 
     @property
     def device_health_raw(self) -> str:
-        return {
-            "HEALTHY": "healthy",
-            "PARTIAL": "partially_healthy",
-            "UNHEALTHY": "unhealthy",
-        }[self.device_health.category]
+        if self.posture_assessment.classification == "HEALTHY":
+            return "healthy"
+        if self.posture_assessment.classification == "UNHEALTHY":
+            return "unhealthy"
+        if self.posture_assessment.complete:
+            return "partially_healthy"
+        return "unknown"
 
     @property
     def location_raw(self) -> str:
@@ -133,6 +143,14 @@ async def collect_context_snapshot(
         settings=configuration,
     )
     health = evaluate_device_health(connection_secure=secure, user_agent=user_agent)
+    binding = device_token_hash(raw_device_token, settings=configuration)
+    posture_assessment = await assess_device_health(
+        device_binding=binding,
+        now=captured_at,
+        settings=configuration,
+        provider=get_device_health_evidence_provider(),
+        verifier=get_device_health_evidence_verifier(),
+    )
 
     access_requests = AccessRequestRepository(session)
     history = await access_requests.list_by_user(profile.id)
@@ -152,6 +170,7 @@ async def collect_context_snapshot(
 
     explainability: dict[str, object] = {
         "connection_secure": secure,
+        "device_health_assessment": posture_assessment.as_context(),
         "resolved_region": location.resolved_region,
         "local_access_hour": time.local_hour,
         "time_baseline_type": time.baseline_type,
@@ -160,7 +179,8 @@ async def collect_context_snapshot(
         captured_at=captured_at,
         client_ip=client_ip_value,
         device_familiarity=familiarity,
-        device_health=health,
+        browser_context=health,
+        posture_assessment=posture_assessment,
         location_normality=location,
         time_normality=time,
         connection_secure=secure,

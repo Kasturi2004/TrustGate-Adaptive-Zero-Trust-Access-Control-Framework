@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -24,6 +25,11 @@ from app.db.repositories.trust_evaluation import TrustEvaluationRepository
 from app.db.repositories.trust_factor import TrustFactorRepository
 from app.schemas.admin import (
     AdminBehavioralRiskIndicators,
+    AdminDeviceHealthAssessment,
+    AdminDeviceHealthCheck,
+    AdminDeviceHealthEvidence,
+    AdminDeviceHealthState,
+    AdminDeviceHealthValidationStatus,
     AdminEventInvestigation,
     AdminInvestigationContext,
     AdminInvestigationDevice,
@@ -36,6 +42,109 @@ from app.schemas.admin import (
     AdminInvestigationTrustEvaluation,
 )
 from app.services.behavioral_risk import get_behavioral_risk_indicators
+from app.services.device_health_assessment import SAFE_REASON_CODES
+
+_POSTURE_CHECKS = {
+    "os_patch_compliance",
+    "endpoint_protection",
+    "disk_encryption",
+    "firewall_status",
+    "integrity_management_compliance",
+}
+_POSTURE_STATES = {"PASS", "FAIL", "UNKNOWN"}
+_POSTURE_VALIDATION_STATUSES = {
+    "VALID",
+    "UNVERIFIED",
+    "INVALID",
+    "STALE",
+    "WRONG_DEVICE",
+    "MALFORMED",
+}
+
+
+def _admin_posture_assessment(value: object) -> AdminDeviceHealthAssessment | None:
+    """Project posture JSON through a strict, credential-free admin allow-list."""
+    if not isinstance(value, dict) or value.get("version") != "posture-v1":
+        return None
+    classification = value.get("classification")
+    if not isinstance(classification, str) or classification not in {
+        "HEALTHY",
+        "PARTIAL",
+        "UNHEALTHY",
+    }:
+        return None
+
+    raw_score = value.get("score")
+    try:
+        score = Decimal(str(raw_score)) if raw_score is not None else None
+    except Exception:
+        score = None
+    if score is not None and (not score.is_finite() or not Decimal("0") <= score <= 100):
+        score = None
+
+    evidence: list[AdminDeviceHealthEvidence] = []
+    raw_evidence = value.get("evidence")
+    if isinstance(raw_evidence, list):
+        seen_checks: set[str] = set()
+        for item in raw_evidence:
+            if not isinstance(item, dict):
+                continue
+            check = item.get("check")
+            state = item.get("state")
+            validation = item.get("validation_status")
+            if (
+                not isinstance(check, str)
+                or check not in _POSTURE_CHECKS
+                or check in seen_checks
+                or not isinstance(state, str)
+                or state not in _POSTURE_STATES
+                or not isinstance(validation, str)
+                or validation not in _POSTURE_VALIDATION_STATUSES
+            ):
+                continue
+            seen_checks.add(check)
+            observed_at: datetime | None = None
+            raw_observed_at = item.get("observed_at")
+            if isinstance(raw_observed_at, str):
+                try:
+                    observed_at = datetime.fromisoformat(raw_observed_at)
+                except ValueError:
+                    observed_at = None
+            reason_code = item.get("reason_code")
+            if not isinstance(reason_code, str) or reason_code not in SAFE_REASON_CODES:
+                reason_code = None
+            evidence.append(
+                AdminDeviceHealthEvidence(
+                    check=cast(AdminDeviceHealthCheck, check),
+                    state=cast(AdminDeviceHealthState, state),
+                    validation_status=cast(AdminDeviceHealthValidationStatus, validation),
+                    observed_at=observed_at,
+                    reason_code=reason_code,
+                )
+            )
+
+    raw_reasons = value.get("reason_codes")
+    reason_codes = (
+        list(
+            dict.fromkeys(
+                code for code in raw_reasons if isinstance(code, str) and code in SAFE_REASON_CODES
+            )
+        )
+        if isinstance(raw_reasons, list)
+        else []
+    )
+    verified_count = sum(item.validation_status == "VALID" for item in evidence)
+    complete = value.get("complete") is True and verified_count == len(_POSTURE_CHECKS)
+    return AdminDeviceHealthAssessment(
+        version="posture-v1",
+        classification=cast(Literal["HEALTHY", "PARTIAL", "UNHEALTHY"], classification),
+        score=score,
+        complete=complete,
+        verified_evidence_count=verified_count,
+        total_evidence_count=len(_POSTURE_CHECKS),
+        reason_codes=reason_codes,
+        evidence=evidence,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -306,10 +415,20 @@ async def get_admin_event_investigation(
                 select(ContextSignal).where(ContextSignal.access_request_id == access_request_id)
             )
             if context is not None:
+                assessment_context = context.raw_context.get("device_health_assessment")
+                assessment_version = (
+                    assessment_context.get("version")
+                    if isinstance(assessment_context, dict)
+                    else None
+                )
                 context_response = AdminInvestigationContext(
                     captured_at=context.captured_at,
                     device_familiarity_raw=context.device_familiarity_raw,
                     device_health_raw=context.device_health_raw,
+                    device_health_assessment_version=(
+                        assessment_version if isinstance(assessment_version, str) else None
+                    ),
+                    device_health_assessment=_admin_posture_assessment(assessment_context),
                     location_raw=context.location_raw,
                     time_raw=context.time_raw,
                 )

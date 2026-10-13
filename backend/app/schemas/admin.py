@@ -2,9 +2,22 @@
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+AdminDeviceHealthCheck = Literal[
+    "os_patch_compliance",
+    "endpoint_protection",
+    "disk_encryption",
+    "firewall_status",
+    "integrity_management_compliance",
+]
+AdminDeviceHealthState = Literal["PASS", "FAIL", "UNKNOWN"]
+AdminDeviceHealthValidationStatus = Literal[
+    "VALID", "UNVERIFIED", "INVALID", "STALE", "WRONG_DEVICE", "MALFORMED"
+]
 
 
 class AdminRiskIndicator(BaseModel):
@@ -108,6 +121,33 @@ class AdminInvestigationRequest(BaseModel):
     device: AdminInvestigationDevice | None
 
 
+class AdminDeviceHealthEvidence(BaseModel):
+    """Safe, allow-listed posture evidence fields for an admin investigation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    check: AdminDeviceHealthCheck
+    state: AdminDeviceHealthState
+    validation_status: AdminDeviceHealthValidationStatus
+    observed_at: datetime | None
+    reason_code: str | None
+
+
+class AdminDeviceHealthAssessment(BaseModel):
+    """Scoring summary and coverage; never includes proof or device binding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["posture-v1"]
+    classification: Literal["HEALTHY", "PARTIAL", "UNHEALTHY"]
+    score: Decimal | None = Field(default=None, ge=0, le=100)
+    complete: bool
+    verified_evidence_count: int = Field(ge=0, le=5)
+    total_evidence_count: int = Field(ge=0, le=5)
+    reason_codes: list[str]
+    evidence: list[AdminDeviceHealthEvidence]
+
+
 class AdminInvestigationContext(BaseModel):
     """Normalized persisted context signals, excluding raw context payloads."""
 
@@ -116,6 +156,8 @@ class AdminInvestigationContext(BaseModel):
     captured_at: datetime
     device_familiarity_raw: str
     device_health_raw: str
+    device_health_assessment_version: str | None = None
+    device_health_assessment: AdminDeviceHealthAssessment | None = None
     location_raw: str
     time_raw: str
 

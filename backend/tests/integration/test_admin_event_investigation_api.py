@@ -143,6 +143,43 @@ async def _seed_investigation(database_url: str) -> SeededInvestigation:
                     raw_context={
                         "device_fingerprint": _DEVICE_HASH,
                         "password": _PASSWORD,
+                        "device_health_assessment": {
+                            "version": "posture-v1",
+                            "classification": "PARTIAL",
+                            "score": "25.00",
+                            "complete": False,
+                            "reason_codes": ["provider_unavailable", "evidence_incomplete"],
+                            "evidence": [
+                                {
+                                    "check": "os_patch_compliance",
+                                    "state": "PASS",
+                                    "source": "test-edr",
+                                    "observed_at": _NOW.isoformat(),
+                                    "validation_status": "VALID",
+                                    "device_binding": _DEVICE_HASH,
+                                    "binding_status": "MATCHED",
+                                    "reason_code": None,
+                                },
+                                *[
+                                    {
+                                        "check": check,
+                                        "state": "UNKNOWN",
+                                        "source": "no_configured_provider",
+                                        "observed_at": None,
+                                        "validation_status": "UNVERIFIED",
+                                        "device_binding": None,
+                                        "binding_status": "NOT_OBSERVED",
+                                        "reason_code": "provider_unavailable",
+                                    }
+                                    for check in (
+                                        "endpoint_protection",
+                                        "disk_encryption",
+                                        "firewall_status",
+                                        "integrity_management_compliance",
+                                    )
+                                ],
+                            ],
+                        },
                     },
                     captured_at=_NOW,
                 )
@@ -417,9 +454,19 @@ def test_admin_investigation_returns_the_full_persisted_chain_and_audits_read(
         "captured_at",
         "device_familiarity_raw",
         "device_health_raw",
+        "device_health_assessment_version",
+        "device_health_assessment",
         "location_raw",
         "time_raw",
     }
+    assessment = body["context_signals"]["device_health_assessment"]
+    assert assessment["classification"] == "PARTIAL"
+    assert assessment["score"] == 25
+    assert assessment["verified_evidence_count"] == 1
+    assert assessment["total_evidence_count"] == 5
+    assert assessment["reason_codes"] == ["provider_unavailable", "evidence_incomplete"]
+    assert "device_binding" not in assessment["evidence"][0]
+    assert "source" not in assessment["evidence"][0]
     assert len(body["trust_evaluation"]["factors"]) == 4
     factor = body["trust_evaluation"]["factors"][0]
     assert set(factor) == {

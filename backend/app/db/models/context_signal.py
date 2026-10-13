@@ -20,7 +20,7 @@ class ContextSignal(Base):
             name="device_familiarity_values",
         ),
         CheckConstraint(
-            "device_health_raw IN ('healthy', 'partially_healthy', 'unhealthy')",
+            "device_health_raw IN ('healthy', 'partially_healthy', 'unhealthy', 'unknown')",
             name="device_health_values",
         ),
         CheckConstraint(

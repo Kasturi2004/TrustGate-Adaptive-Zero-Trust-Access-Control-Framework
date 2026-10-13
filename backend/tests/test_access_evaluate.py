@@ -122,6 +122,33 @@ def test_authenticated_request_returns_only_curated_fail_closed_response(
     assert _DEVICE_TOKEN not in response.text
 
 
+def test_unexpected_access_evaluation_error_is_logged_with_request_id(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from app.db.repositories.profile import ProfileRepository
+
+    async def fail_get_profile(_repository: object, _user_id: UUID) -> None:
+        raise RuntimeError("synthetic profile lookup failure")
+
+    monkeypatch.setattr(ProfileRepository, "get_by_id", fail_get_profile)
+    request_id = "handbook-evaluation-regression"
+    caplog.set_level("ERROR", logger="trustgate")
+
+    response = TestClient(client.app, raise_server_exceptions=False).post(
+        "/access/evaluate",
+        json={"resource_id": "employee-handbook"},
+        headers={"X-Device-Token": _DEVICE_TOKEN, "X-Request-ID": request_id},
+    )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["message"] == "An unexpected error occurred."
+    assert response.json()["error"]["request_id"] == request_id
+    assert request_id in caplog.text
+    assert "synthetic profile lookup failure" in caplog.text
+
+
 def test_evaluation_response_exposes_request_selector_separately_from_evaluation_id(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -260,8 +287,8 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
                         ),
                     )
                     or "opaque-test-hash",
-                    last_user_agent_family=context_snapshot.device_health.browser_family,
-                    last_user_agent_version=context_snapshot.device_health.browser_version,
+                    last_user_agent_family=context_snapshot.browser_context.browser_family,
+                    last_user_agent_version=context_snapshot.browser_context.browser_version,
                 ),
                 context=context_snapshot,
                 policy_version_id=active_policy.id,
@@ -319,7 +346,8 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     assert pipeline.snapshot.client_ip == IPv4Address("127.0.0.1")
     assert pipeline.snapshot.location_normality.category == "UNAVAILABLE"
     assert pipeline.snapshot.device_familiarity.category == "UNKNOWN"
-    assert pipeline.snapshot.device_health.category == "UNHEALTHY"
+    assert pipeline.snapshot.posture_assessment.classification == "PARTIAL"
+    assert pipeline.snapshot.browser_context.category == "UNHEALTHY"
     assert pipeline.snapshot.time_normality.local_hour in range(24)
     assert pipeline.snapshot.raw_context["resolved_region"] is None
     assert "region" not in pipeline.snapshot.raw_context
@@ -340,11 +368,11 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     assert _USER_AGENT not in repr(signal.raw_context)
     assert evaluation.access_request_id == access_request.id
     assert evaluation.policy_version_id == active_policy.id
-    assert evaluation.trust_score == Decimal("39.00")
+    assert evaluation.trust_score == Decimal("36.00")
     assert len(observed) == 1
     assert observed[0][0] == TrustSignals(
         device_familiarity_raw="unknown_device",
-        device_health_raw="unhealthy",
+        device_health_raw="unknown",
         location_raw="unavailable",
         time_raw="within_normal_window",
     )
@@ -358,8 +386,9 @@ def test_live_route_collects_context_and_passes_it_to_gateway_persistence(
     assert factor_rows["device_familiarity"].normalized_score == Decimal("20")
     assert factor_rows["device_familiarity"].weight == Decimal("0.350")
     assert factor_rows["device_familiarity"].weighted_contribution == Decimal("7.000")
-    assert factor_rows["device_health"].raw_value == "unhealthy"
-    assert factor_rows["device_health"].weighted_contribution == Decimal("3.000")
+    assert factor_rows["device_health"].raw_value == "unknown"
+    assert factor_rows["device_health"].normalized_score == Decimal("0")
+    assert factor_rows["device_health"].weighted_contribution == Decimal("0.000")
     assert factor_rows["location_normality"].raw_value == "unavailable"
     assert factor_rows["location_normality"].weighted_contribution == Decimal("14.000")
     assert factor_rows["time_normality"].raw_value == "within_normal_window"
@@ -527,6 +556,8 @@ def test_missing_device_token_uses_safe_validation_envelope(client: TestClient) 
     [
         {"resource_id": "ops-dashboard", "decision": "ALLOW"},
         {"trust_score": 100},
+        {"device_health_score": 100},
+        {"device_health_raw": "healthy"},
         {"factors": []},
         {"trust_factors": []},
         {"policy_decision": "ALLOW"},

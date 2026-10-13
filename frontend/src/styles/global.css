@@ -2527,6 +2527,29 @@ tbody tr:hover {
   color: #9ec4ff;
 }
 
+.posture-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.posture-reasons code,
+.posture-evidence code {
+  color: #f0c982;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.posture-evidence .factor-item > svg {
+  flex: 0 0 auto;
+  color: #9ec4ff;
+}
+
 .related-item > div {
   flex: 1;
   min-width: 0;

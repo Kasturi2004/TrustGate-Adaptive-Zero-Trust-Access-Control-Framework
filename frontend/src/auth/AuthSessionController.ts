@@ -50,7 +50,11 @@ export class AuthSessionController {
 
   setSession(session: AuthSessionLike | null) {
     const key = session ? `${session.user.id}:${session.access_token}` : null;
-    if (key === this.activeKey && this.snapshot.status !== "session_error") return;
+    if (
+      key === this.activeKey &&
+      this.snapshot.status !== "session_error" &&
+      (session !== null || this.snapshot.status === "unauthenticated")
+    ) return;
 
     this.generation += 1;
     const generation = this.generation;

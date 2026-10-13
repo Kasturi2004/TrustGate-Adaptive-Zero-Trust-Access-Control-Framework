@@ -1,9 +1,9 @@
-"""Prototype-only browser-observable device-health signal evaluator.
+"""Legacy browser/transport classifier retained for device browser metadata.
 
-This signal describes only the request's transport security and parsed
-browser/OS family and version. It cannot detect antivirus, disk encryption,
-patch status, EDR, MDM, device compromise, hardware attestation, or general
-endpoint security posture.
+This classifier is not used as endpoint-posture evidence or by the current
+trust score. It describes request transport and parsed browser/OS support only.
+It cannot detect antivirus, disk encryption, patch status, EDR, MDM, device
+compromise, hardware attestation, or general endpoint security posture.
 """
 
 from __future__ import annotations

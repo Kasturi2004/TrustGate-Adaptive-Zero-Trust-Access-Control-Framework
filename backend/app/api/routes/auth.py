@@ -29,6 +29,32 @@ _GENERIC_LOGIN_FAILURE = "Invalid email or password."
 _UPSTREAM_FAILURE = "Authentication service is unavailable."
 
 
+def _signup_error_status(response: httpx.Response) -> tuple[int, str]:
+    """Map known Supabase signup errors to safe client messages."""
+    try:
+        body = response.json()
+    except (TypeError, ValueError):
+        body = {}
+    code = body.get("code") if isinstance(body, dict) else None
+    message = body.get("msg", body.get("message")) if isinstance(body, dict) else None
+    normalized_code = code.lower() if isinstance(code, str) else ""
+    normalized_message = message.lower() if isinstance(message, str) else ""
+
+    if normalized_code in {"user_already_exists", "email_exists"} or (
+        "already registered" in normalized_message
+    ):
+        return (
+            status.HTTP_409_CONFLICT,
+            "An account with this email already exists. Sign in instead.",
+        )
+    if normalized_code in {"weak_password", "validation_failed", "email_address_invalid"}:
+        return (
+            status.HTTP_400_BAD_REQUEST,
+            "Check your email and password requirements, then try again.",
+        )
+    return status.HTTP_502_BAD_GATEWAY, _UPSTREAM_FAILURE
+
+
 def _authenticated_user_id(response: httpx.Response) -> UUID | None:
     """Extract Supabase's authenticated user ID without altering its response."""
     try:
@@ -44,6 +70,25 @@ class LoginRequest(BaseModel):
 
     email: Annotated[StrictStr, Field(min_length=1, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
     password: Annotated[StrictStr, Field(min_length=1)]
+
+
+class RefreshRequest(BaseModel):
+    """Refresh an expired access token using its Supabase refresh token."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: Annotated[StrictStr, Field(min_length=1)]
+
+
+class RefreshResponse(BaseModel):
+    """Allowlisted fields returned by Supabase token refresh."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    access_token: str
+    refresh_token: str
+    token_type: str | None = None
+    expires_in: int | None = None
 
 
 class SignupRequest(BaseModel):
@@ -212,6 +257,72 @@ async def login(
     ) from None
 
 
+@router.post("/refresh", response_model=RefreshResponse)
+@limiter.limit("30 per minute")
+async def refresh_session(request: Request, payload: RefreshRequest) -> RefreshResponse:
+    """Exchange a refresh token with Supabase without logging or persisting it."""
+    settings = get_settings()
+    if not settings.supabase_url or not settings.supabase_anon_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_UPSTREAM_FAILURE,
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            upstream = await client.post(
+                f"{settings.supabase_url.rstrip('/')}/auth/v1/token?grant_type=refresh_token",
+                headers={
+                    "apikey": settings.supabase_anon_key,
+                    "Content-Type": "application/json",
+                },
+                json={"refresh_token": payload.refresh_token},
+            )
+    except httpx.RequestError:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_UPSTREAM_FAILURE,
+        ) from None
+
+    if upstream.status_code in {400, 401, 422}:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Your session expired. Sign in again to continue.",
+        ) from None
+    if not 200 <= upstream.status_code < 300:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_UPSTREAM_FAILURE,
+        ) from None
+
+    try:
+        body = upstream.json()
+        access_token = body["access_token"]
+        refresh_token = body["refresh_token"]
+        token_type = body.get("token_type")
+        expires_in = body.get("expires_in")
+        if not isinstance(access_token, str) or not access_token:
+            raise ValueError("Invalid upstream session")
+        if not isinstance(refresh_token, str) or not refresh_token:
+            raise ValueError("Invalid upstream session")
+        if token_type is not None and not isinstance(token_type, str):
+            raise ValueError("Invalid upstream session")
+        if expires_in is not None and not isinstance(expires_in, int):
+            raise ValueError("Invalid upstream session")
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=_UPSTREAM_FAILURE,
+        ) from None
+
+    return RefreshResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        token_type=token_type,
+        expires_in=expires_in,
+    )
+
+
 @router.post("/signup", response_model=SignupResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5 per 5 minutes")
 async def signup(
@@ -274,10 +385,8 @@ async def signup(
 
     if not 200 <= upstream.status_code < 300:
         if upstream.status_code in {400, 401, 409, 422}:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Unable to create account. Check the details or sign in.",
-            ) from None
+            error_status, error_message = _signup_error_status(upstream)
+            raise HTTPException(status_code=error_status, detail=error_message) from None
         if upstream.status_code == 429:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,

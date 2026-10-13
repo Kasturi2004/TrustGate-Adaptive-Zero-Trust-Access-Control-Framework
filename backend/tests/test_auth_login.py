@@ -204,6 +204,50 @@ def test_valid_credentials_are_proxied_and_token_response_is_relayed(
     assert kwargs["json"] == {"email": "user@example.test", "password": _PASSWORD}
 
 
+def test_refresh_exchanges_the_refresh_token_and_returns_rotated_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = json.dumps(
+        {
+            "access_token": _ACCESS_TOKEN,
+            "refresh_token": _REFRESH_TOKEN,
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {"id": _LOGIN_USER_ID},
+        }
+    ).encode()
+    mock_client = _MockClient(_upstream_response(200, body))
+    client = _client(monkeypatch, mock_client)
+
+    response = client.post("/auth/refresh", json={"refresh_token": _REFRESH_TOKEN})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "access_token": _ACCESS_TOKEN,
+        "refresh_token": _REFRESH_TOKEN,
+        "token_type": "bearer",
+        "expires_in": 3600,
+    }
+    call = mock_client.post.await_args
+    assert call is not None
+    args, kwargs = call
+    assert args[0] == "https://project.example.test/auth/v1/token?grant_type=refresh_token"
+    assert kwargs["json"] == {"refresh_token": _REFRESH_TOKEN}
+
+
+def test_refresh_rejects_an_invalid_upstream_refresh_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch, _MockClient(_upstream_response(400, b'{"error":"invalid"}')))
+
+    response = client.post("/auth/refresh", json={"refresh_token": _REFRESH_TOKEN})
+
+    assert response.status_code == 401
+    assert response.json()["error"]["message"] == (
+        "Your session expired. Sign in again to continue."
+    )
+
+
 def test_signup_creates_an_employee_session_without_accepting_a_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -303,13 +347,18 @@ def test_signup_rejects_client_supplied_role_and_short_password(
     mock_client.post.assert_not_awaited()
 
 
-def test_signup_duplicate_account_failure_is_generic(
+def test_signup_duplicate_account_failure_is_actionable_and_safe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     secret_message = "employee already exists; password metadata is private"
     client = _client(
         monkeypatch,
-        _MockClient(_upstream_response(422, f'{{"msg":"{secret_message}"}}'.encode())),
+        _MockClient(
+            _upstream_response(
+                422,
+                f'{{"code":"user_already_exists","msg":"{secret_message}"}}'.encode(),
+            )
+        ),
     )
 
     response = client.post(
@@ -321,12 +370,34 @@ def test_signup_duplicate_account_failure_is_generic(
         },
     )
 
-    assert response.status_code == 400
+    assert response.status_code == 409
     assert response.json()["error"]["message"] == (
-        "Unable to create account. Check the details or sign in."
+        "An account with this email already exists. Sign in instead."
     )
     assert secret_message not in response.text
     assert _SIGNUP_PASSWORD not in response.text
+
+
+def test_signup_unknown_provider_error_is_not_misreported_as_invalid_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(
+        monkeypatch,
+        _MockClient(_upstream_response(400, b'{"msg":"private provider diagnostic"}')),
+    )
+
+    response = client.post(
+        "/auth/signup",
+        json={
+            "full_name": "Employee Example",
+            "email": "employee@example.test",
+            "password": _SIGNUP_PASSWORD,
+        },
+    )
+
+    assert response.status_code == 502
+    assert response.json()["error"]["message"] == "An unexpected error occurred."
+    assert "private provider diagnostic" not in response.text
 
 
 def test_signup_confirmation_required_response_does_not_fabricate_a_session(

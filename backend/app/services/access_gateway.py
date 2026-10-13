@@ -424,8 +424,8 @@ async def access_gateway(
                 raise ValueError("Device identity is unavailable")
             device_result = DeviceResult(
                 device_hash=device_hash,
-                last_user_agent_family=context_snapshot.device_health.browser_family,
-                last_user_agent_version=context_snapshot.device_health.browser_version,
+                last_user_agent_family=context_snapshot.browser_context.browser_family,
+                last_user_agent_version=context_snapshot.browser_context.browser_version,
             )
             evaluated_context = context_snapshot
         else:
@@ -465,6 +465,7 @@ async def access_gateway(
                         DeviceFamiliaritySignal, context_snapshot.device_familiarity_raw
                     ),
                     device_health_raw=cast(DeviceHealthSignal, context_snapshot.device_health_raw),
+                    device_health_score=context_snapshot.posture_assessment.risk_score,
                     location_raw=cast(TrustLocationSignal, context_snapshot.location_raw),
                     time_raw=cast(TrustTimeSignal, context_snapshot.time_raw),
                 )

@@ -4,12 +4,13 @@ API startup settings remain separate from feature-specific settings.
 DEVICE_HASH_SECRET is required when access/device context hashes a device token.
 """
 
+from decimal import Decimal
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -57,6 +58,29 @@ class Settings(BaseSettings):
     geoip_db_path: str | None = None
     treat_localhost_as_secure: bool | None = None
     block_indicator_limit: int = Field(default=3, ge=1)
+    device_health_os_patch_weight: Decimal = Field(default=Decimal("25"), ge=0, le=100)
+    device_health_endpoint_protection_weight: Decimal = Field(default=Decimal("25"), ge=0, le=100)
+    device_health_disk_encryption_weight: Decimal = Field(default=Decimal("20"), ge=0, le=100)
+    device_health_firewall_weight: Decimal = Field(default=Decimal("15"), ge=0, le=100)
+    device_health_integrity_management_weight: Decimal = Field(default=Decimal("15"), ge=0, le=100)
+    device_health_healthy_threshold: Decimal = Field(default=Decimal("80"), ge=0, le=100)
+    device_health_unhealthy_threshold: Decimal = Field(default=Decimal("40"), ge=0, le=100)
+    device_health_evidence_max_age_seconds: int = Field(default=86400, ge=1)
+
+    @model_validator(mode="after")
+    def validate_device_health_configuration(self) -> "Settings":
+        weights = (
+            self.device_health_os_patch_weight,
+            self.device_health_endpoint_protection_weight,
+            self.device_health_disk_encryption_weight,
+            self.device_health_firewall_weight,
+            self.device_health_integrity_management_weight,
+        )
+        if sum(weights, start=Decimal("0")) != Decimal("100"):
+            raise ValueError("Device-health evidence weights must sum to 100")
+        if self.device_health_unhealthy_threshold >= self.device_health_healthy_threshold:
+            raise ValueError("Device-health unhealthy threshold must be below healthy threshold")
+        return self
 
     @field_validator(
         "supabase_url",

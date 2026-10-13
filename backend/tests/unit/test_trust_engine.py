@@ -16,7 +16,7 @@ _DEFAULT_WEIGHTS = TrustWeights(
 )
 _SIGNAL_VALUES = (
     ("known_device", "unknown_device"),
-    ("healthy", "partially_healthy", "unhealthy"),
+    ("healthy", "partially_healthy", "unhealthy", "unknown"),
     ("expected_region", "new_region", "unavailable"),
     ("within_normal_window", "outside_normal_window"),
 )
@@ -49,6 +49,7 @@ def test_all_required_signal_combinations_produce_four_typed_factors(
         "healthy": Decimal("100"),
         "partially_healthy": Decimal("60"),
         "unhealthy": Decimal("10"),
+        "unknown": Decimal("0"),
         "expected_region": Decimal("100"),
         "new_region": Decimal("40"),
         "unavailable": Decimal("70"),
@@ -75,6 +76,25 @@ def test_all_required_signal_combinations_produce_four_typed_factors(
         (factor.weighted_contribution for factor in result.factors), start=Decimal("0")
     )
     assert evaluate(signals, _DEFAULT_WEIGHTS) == result
+
+
+def test_verified_assessment_score_is_used_by_device_health_factor() -> None:
+    result = evaluate(
+        TrustSignals(
+            device_familiarity_raw="known_device",
+            device_health_raw="healthy",
+            device_health_score=Decimal("85.00"),
+            location_raw="expected_region",
+            time_raw="within_normal_window",
+        ),
+        _DEFAULT_WEIGHTS,
+    )
+
+    health_factor = next(
+        factor for factor in result.factors if factor.factor_name == "device_health"
+    )
+    assert health_factor.normalized_score == Decimal("85.00")
+    assert health_factor.weighted_contribution == Decimal("25.500")
 
 
 def test_default_policy_weights_have_exact_decimal_factor_calculations() -> None:

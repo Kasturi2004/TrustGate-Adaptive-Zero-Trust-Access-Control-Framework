@@ -124,8 +124,8 @@ def _result(
                 ),
             )
             or "unavailable",
-            last_user_agent_family=snapshot.device_health.browser_family,
-            last_user_agent_version=snapshot.device_health.browser_version,
+            last_user_agent_family=snapshot.browser_context.browser_family,
+            last_user_agent_version=snapshot.browser_context.browser_version,
         ),
         context=snapshot,
         policy_version_id=policy_version_id,
@@ -277,7 +277,7 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert signal is not None
         assert evaluation is not None
         assert signal.device_familiarity_raw == "known_device"
-        assert signal.device_health_raw == "healthy"
+        assert signal.device_health_raw == "unknown"
         assert signal.location_raw == "expected_region"
         assert signal.time_raw == "within_normal_window"
         assert signal.raw_context == dict(snapshot.raw_context)
@@ -285,7 +285,7 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         assert result.decision == "ALLOW"
         assert request.initial_decision == "ALLOW"
         assert evaluation.policy_version_id == active_policy_id
-        assert evaluation.trust_score == Decimal("100.00")
+        assert evaluation.trust_score == Decimal("70.00")
         assert evaluation.risk_classification == "LOW"
         assert len(policy_calls) == 1
         evaluated_score, thresholds, decision_result = policy_calls[0]
@@ -340,7 +340,7 @@ def test_context_snapshot_is_persisted_by_gateway_in_its_single_transaction(
         }
         assert {name: factor.weighted_contribution for name, factor in factor_rows.items()} == {
             "device_familiarity": Decimal("35.000"),
-            "device_health": Decimal("30.000"),
+            "device_health": Decimal("0.000"),
             "location_normality": Decimal("20.000"),
             "time_normality": Decimal("15.000"),
         }

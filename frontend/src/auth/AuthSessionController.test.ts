@@ -22,6 +22,19 @@ function deferred<T>() {
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("AuthSessionController", () => {
+  it("settles the initial loading state when there is no Supabase session", () => {
+    const controller = new AuthSessionController(async () => admin);
+
+    controller.setSession(null);
+
+    expect(controller.getSnapshot()).toEqual({
+      session: null,
+      profile: null,
+      status: "unauthenticated",
+    });
+    expect(adminAccess(controller.getSnapshot())).toBe("unauthenticated");
+  });
+
   it("resolves ADMIN and grants the protected route", async () => {
     const controller = new AuthSessionController(async () => admin);
     controller.setSession(session("admin-id"));

@@ -35,8 +35,10 @@ from app.services.access_gateway import (
     get_security_pipeline,
 )
 from app.services.context import client_ip as client_ip_module
+from app.services.context import collector as context_collector
 from app.services.context.device_familiarity import device_token_hash
 from app.services.context.location import UnavailableGeoResolver
+from app.services.device_health_assessment import CHECK_WEIGHTS, EvidenceObservation
 from app.services.protected_resource import get_protected_resource
 from fastapi import HTTPException, Response
 from pydantic import SecretStr
@@ -68,6 +70,44 @@ _SETTINGS = Settings(
         base64.urlsafe_b64encode(b"production-pipeline-test-key-32b").decode("ascii")
     ),
 )
+_TEST_POSTURE_PROOF = b"production-pipeline-fixture-proof"
+
+
+class _VerifiedPostureFixtureProvider:
+    async def collect(
+        self, *, device_binding: str | None, now: datetime
+    ) -> tuple[EvidenceObservation, ...]:
+        if device_binding is None:
+            return ()
+        return tuple(
+            EvidenceObservation(
+                check=check,
+                state="PASS",
+                source="integration-fixture",
+                observed_at=now,
+                device_binding=device_binding,
+                proof=_TEST_POSTURE_PROOF,
+            )
+            for check in CHECK_WEIGHTS
+        )
+
+
+class _VerifiedPostureFixtureProof:
+    def verify(self, observation: EvidenceObservation) -> bool:
+        return observation.proof == _TEST_POSTURE_PROOF
+
+
+def _enable_test_posture_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        context_collector,
+        "get_device_health_evidence_provider",
+        _VerifiedPostureFixtureProvider,
+    )
+    monkeypatch.setattr(
+        context_collector,
+        "get_device_health_evidence_verifier",
+        _VerifiedPostureFixtureProof,
+    )
 
 
 def _request(*, scheme: str = "https") -> Request:
@@ -142,6 +182,7 @@ def test_real_pipeline_bootstraps_unknown_device_through_step_up_and_recognition
     migrated_test_database: ScratchDatabase,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_test_posture_provider(monkeypatch)
     monkeypatch.setattr(mfa_secrets, "get_settings", lambda: _SETTINGS)
     monkeypatch.setattr(rate_limit, "get_settings", lambda: _SETTINGS)
     monkeypatch.setattr(client_ip_module, "get_settings", lambda: _SETTINGS)
@@ -295,7 +336,7 @@ def test_real_pipeline_blocks_poor_server_context(
             )
         )
         assert evaluation is not None
-        assert evaluation.trust_score == pytest.approx(28.5)
+        assert evaluation.trust_score == pytest.approx(25.5)
         assert evaluation.risk_classification == "HIGH"
         request = await session.get(AccessRequest, result.access_request_id)
         assert request is not None
@@ -307,7 +348,10 @@ def test_real_pipeline_blocks_poor_server_context(
 
 def test_active_policy_changes_decision_without_changing_real_trust_score(
     migrated_test_database: ScratchDatabase,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _enable_test_posture_provider(monkeypatch)
+
     async def exercise(session: AsyncSession, user_id: UUID) -> None:
         await _assert_user_exists(session, user_id)
         hashed_token = device_token_hash(_DEVICE_TOKEN, settings=_SETTINGS)

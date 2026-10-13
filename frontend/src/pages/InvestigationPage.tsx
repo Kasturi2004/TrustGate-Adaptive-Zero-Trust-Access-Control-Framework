@@ -16,6 +16,8 @@ import { ErrorState, LoadingState } from "../components/States";
 import { SectionHeading } from "../components/SectionHeading";
 import { StatusBadge } from "../components/StatusBadge";
 import type { Investigation } from "../types/api";
+import { formatDeviceHealth } from "./deviceHealthLabel";
+import { formatEvidenceCoverage, formatPostureScore } from "./deviceHealthAssessment";
 
 export function InvestigationPage() {
   const { eventId = "" } = useParams();
@@ -64,6 +66,7 @@ export function InvestigationPage() {
     setRefreshKey((value) => value + 1);
   }
   const request = data?.access_request;
+  const posture = data?.context_signals?.device_health_assessment;
 
   return (
     <>
@@ -199,7 +202,10 @@ export function InvestigationPage() {
                     />
                     <Detail
                       label="Device health"
-                      value={data.context_signals.device_health_raw}
+                      value={formatDeviceHealth(
+                        data.context_signals.device_health_raw,
+                        data.context_signals.device_health_assessment_version,
+                      )}
                       icon={<Shield size={15} />}
                     />
                     <Detail
@@ -247,6 +253,49 @@ export function InvestigationPage() {
                   <p className="muted-copy">No related events were returned.</p>
                 )}
               </section>
+              {posture && (
+                <section className="panel detail-panel posture-panel">
+                  <SectionHeading
+                    title="Endpoint posture assessment"
+                    detail={formatEvidenceCoverage(
+                      posture.verified_evidence_count,
+                      posture.total_evidence_count,
+                    )}
+                  />
+                  <div className="evaluation-score">
+                    <span>Assessment</span>
+                    <strong>{posture.classification}</strong>
+                    <span>
+                      {formatPostureScore(posture.score)}
+                    </span>
+                  </div>
+                  {posture.reason_codes.length > 0 && (
+                    <div className="posture-reasons" aria-label="Posture reason codes">
+                      <b>Reason codes</b>
+                      {posture.reason_codes.map((code) => (
+                        <code key={code}>{code}</code>
+                      ))}
+                    </div>
+                  )}
+                  <div className="factor-list posture-evidence">
+                    {posture.evidence.map((item) => (
+                      <div className="factor-item" key={item.check}>
+                        <Shield size={15} />
+                        <div>
+                          <b>{item.check.replaceAll("_", " ")}</b>
+                          <span>
+                            {item.state} · {item.validation_status}
+                            {item.observed_at
+                              ? ` · ${new Date(item.observed_at).toLocaleString()}`
+                              : " · no observation time"}
+                          </span>
+                          {item.reason_code && <code>{item.reason_code}</code>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           </>
         )

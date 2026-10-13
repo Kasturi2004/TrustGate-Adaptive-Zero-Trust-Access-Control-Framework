@@ -142,17 +142,18 @@ def test_collector_gathers_four_signals_without_persisting(
     )
 
     assert snapshot.device_familiarity == KNOWN_DEVICE
-    assert snapshot.device_health.category == "HEALTHY"
+    assert snapshot.posture_assessment.classification == "PARTIAL"
     assert snapshot.location_normality.category == "EXPECTED"
     assert snapshot.time_normality.baseline_type == "default"
     assert snapshot.client_ip == IPv4Address("8.8.8.8")
     assert snapshot.device_familiarity_raw == "known_device"
-    assert snapshot.device_health_raw == "healthy"
+    assert snapshot.device_health_raw == "unknown"
     assert snapshot.location_raw == "expected_region"
     assert snapshot.time_raw == "within_normal_window"
     assert snapshot.resolved_region == "US-CA"
     assert snapshot.raw_context == {
         "connection_secure": True,
+        "device_health_assessment": snapshot.posture_assessment.as_context(),
         "resolved_region": "US-CA",
         "local_access_hour": 12,
         "time_baseline_type": "default",
@@ -257,6 +258,7 @@ def test_snapshot_is_immutable_and_never_contains_credentials(
         cast(MutableMapping[str, object], snapshot.raw_context)["new_field"] = "client override"
     assert set(snapshot.raw_context) == {
         "connection_secure",
+        "device_health_assessment",
         "resolved_region",
         "local_access_hour",
         "time_baseline_type",
@@ -336,7 +338,7 @@ def test_client_payload_context_fields_are_ignored(monkeypatch: pytest.MonkeyPat
     )
 
     assert snapshot.resolved_region == "US-CA"
-    assert snapshot.device_health.category == "HEALTHY"
+    assert snapshot.posture_assessment.classification == "PARTIAL"
     assert snapshot.time_normality.local_hour == 12
 
 

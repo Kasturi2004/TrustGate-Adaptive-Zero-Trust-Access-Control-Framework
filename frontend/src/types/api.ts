@@ -73,6 +73,29 @@ export interface Investigation {
     captured_at: string;
     device_familiarity_raw: string;
     device_health_raw: string;
+    device_health_assessment_version?: string | null;
+    device_health_assessment?: {
+      version: "posture-v1";
+      classification: "HEALTHY" | "PARTIAL" | "UNHEALTHY";
+      score: string | number | null;
+      complete: boolean;
+      verified_evidence_count: number;
+      total_evidence_count: number;
+      reason_codes: string[];
+      evidence: Array<{
+        check: string;
+        state: "PASS" | "FAIL" | "UNKNOWN";
+        validation_status:
+          | "VALID"
+          | "UNVERIFIED"
+          | "INVALID"
+          | "STALE"
+          | "WRONG_DEVICE"
+          | "MALFORMED";
+        observed_at: string | null;
+        reason_code: string | null;
+      }>;
+    } | null;
     location_raw: string;
     time_raw: string;
   } | null;
