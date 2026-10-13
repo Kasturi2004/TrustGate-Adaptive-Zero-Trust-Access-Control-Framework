@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -16,9 +17,10 @@ from app.api.routes import access as access_routes
 from app.api.routes import admin as admin_routes
 from app.core import mfa_secrets, rate_limit
 from app.core.clock import FixedClock
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.mfa_secrets import encrypt_totp_secret
 from app.db.models.access_request import AccessRequest
+from app.db.models.context_signal import ContextSignal
 from app.db.models.device import Device
 from app.db.models.mfa_credential import MfaCredential
 from app.db.models.otp_challenge import OtpChallenge
@@ -161,6 +163,7 @@ def test_acme_access_is_redeemed_and_visible_in_admin_event_feed(
     jwt_module._jwks_client.cache_clear()
 
     application = create_app(settings)
+    application.dependency_overrides[get_settings] = lambda: settings
     application.dependency_overrides[get_clock] = lambda: FixedClock(now)
     application.dependency_overrides[get_geo_resolver] = UnavailableGeoResolver
     with TestClient(
@@ -297,6 +300,12 @@ def test_acme_access_is_redeemed_and_visible_in_admin_event_feed(
                     )
                 )
                 request = await session.get(AccessRequest, request_uuid)
+                context_signal = await session.scalar(
+                    select(ContextSignal).where(ContextSignal.access_request_id == request_uuid)
+                )
+                device = (
+                    await session.get(Device, request.device_id) if request is not None else None
+                )
                 policy_decision = await session.scalar(
                     select(PolicyDecision).where(PolicyDecision.access_request_id == request_uuid)
                 )
@@ -322,9 +331,17 @@ def test_acme_access_is_redeemed_and_visible_in_admin_event_feed(
             assert request.initial_decision == decision
             assert request.final_outcome == "ALLOW"
             assert request.mfa_required is (decision == "STEP_UP")
+            assert context_signal is not None
+            assert context_signal.device_familiarity_raw == "known_device"
+            assert context_signal.device_health_raw == "healthy"
+            assert context_signal.location_raw == "unavailable"
+            assert device is not None and device.recognized_at is not None
             assert policy_decision is not None and policy_decision.decision == decision
             assert trust_evaluation is not None
             assert policy is not None and policy.is_active
+            assert trust_evaluation.risk_classification == "LOW"
+            assert policy_decision.decision_reason.startswith("Trust score ")
+            assert "meets the ALLOW threshold" in policy_decision.decision_reason
             assert (
                 trust_evaluation.trust_score >= policy.allow_threshold
                 if decision == "ALLOW"
@@ -382,8 +399,6 @@ def test_acme_document_rules_mfa_redemption_and_admin_event_chain(
         rate_limit_key_secret="acme-document-rate-limit-secret",
         totp_secret_encryption_key=_TOTP_ENCRYPTION_KEY,
     )
-    device_hash = device_token_hash(_DEVICE_TOKEN, settings=settings)
-    assert device_hash is not None
 
     async def prepare_identities() -> None:
         engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
@@ -393,15 +408,6 @@ def test_acme_document_rules_mfa_redemption_and_admin_event_chain(
                     update(Profile).where(Profile.id == admin_id).values(role="ADMIN")
                 )
             async with AsyncSession(engine) as session, session.begin():
-                session.add(
-                    Device(
-                        user_id=employee_id,
-                        device_hash=device_hash,
-                        recognized_at=now,
-                        first_seen_at=now,
-                        last_seen_at=now,
-                    )
-                )
                 session.add(
                     MfaCredential(
                         user_id=employee_id,
@@ -430,6 +436,7 @@ def test_acme_document_rules_mfa_redemption_and_admin_event_chain(
     jwt_module._jwks_client.cache_clear()
 
     application = create_app(settings)
+    application.dependency_overrides[get_settings] = lambda: settings
     application.dependency_overrides[get_clock] = lambda: FixedClock(now)
     application.dependency_overrides[get_geo_resolver] = UnavailableGeoResolver
     request_id = ""
@@ -566,15 +573,43 @@ def test_acme_document_rules_mfa_redemption_and_admin_event_chain(
         engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
         try:
             async with AsyncSession(engine) as session:
-                request = await session.get(AccessRequest, UUID(request_id))
+                request_uuid = UUID(request_id)
+                request = await session.get(AccessRequest, request_uuid)
                 assert request is not None
                 assert request.consumed_at is not None
+                context_signal = await session.scalar(
+                    select(ContextSignal).where(ContextSignal.access_request_id == request_uuid)
+                )
+                trust_evaluation = await session.scalar(
+                    select(TrustEvaluation).where(TrustEvaluation.access_request_id == request_uuid)
+                )
+                policy_decision = await session.scalar(
+                    select(PolicyDecision).where(PolicyDecision.access_request_id == request_uuid)
+                )
+                policy = (
+                    await session.get(PolicyVersion, trust_evaluation.policy_version_id)
+                    if trust_evaluation is not None
+                    else None
+                )
                 blocked_request = await session.get(
                     AccessRequest, UUID(restricted_body["access_request_id"])
                 )
                 assert blocked_request is not None
                 assert blocked_request.final_outcome == "BLOCK"
                 assert blocked_request.consumed_at is None
+            assert context_signal is not None
+            assert context_signal.device_familiarity_raw == "unknown_device"
+            assert context_signal.device_health_raw == "healthy"
+            assert context_signal.location_raw == "unavailable"
+            assert trust_evaluation is not None
+            assert Decimal("40") <= trust_evaluation.trust_score < Decimal("70")
+            assert trust_evaluation.risk_classification == "MEDIUM"
+            assert policy is not None
+            assert policy.stepup_threshold == Decimal("40.00")
+            assert policy.allow_threshold == Decimal("70.00")
+            assert policy_decision is not None and policy_decision.decision == "STEP_UP"
+            assert "STEP_UP threshold" in policy_decision.decision_reason
+            assert "below the ALLOW threshold" in policy_decision.decision_reason
         finally:
             await engine.dispose()
 
