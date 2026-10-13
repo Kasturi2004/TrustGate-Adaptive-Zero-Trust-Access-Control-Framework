@@ -29,7 +29,11 @@ from jwt.algorithms import ECAlgorithm
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.database import ScratchDatabase, ensure_auth_user_profile
+from tests.integration.database import (
+    ScratchDatabase,
+    ensure_auth_user_profile,
+    ensure_verified_test_authenticator,
+)
 
 _SUPABASE_URL = "https://admin-events-test.supabase.co"
 _TEST_PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
@@ -80,6 +84,9 @@ async def _seed_events(database_url: str) -> SeededEvents:
     await ensure_auth_user_profile(
         database_url, user_id=other_user_id, email=f"events-other-{other_user_id}@integration.test"
     )
+    await ensure_verified_test_authenticator(database_url, user_id=admin_id)
+    await ensure_verified_test_authenticator(database_url, user_id=user_id)
+    await ensure_verified_test_authenticator(database_url, user_id=other_user_id)
     engine = create_async_engine_for_url(database_url, null_pool=True)
     try:
         async with engine.begin() as connection:

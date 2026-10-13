@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.integration.database import (
     ScratchDatabase,
     ensure_auth_user_profile,
+    ensure_verified_test_authenticator,
     remove_auth_user_profile,
 )
 
@@ -94,6 +95,8 @@ async def _seed_detail(database_url: str) -> SeededDetail:
         user_id=other_id,
         email=f"detail-other-{other_id}@integration.test",
     )
+    await ensure_verified_test_authenticator(database_url, user_id=owner_id)
+    await ensure_verified_test_authenticator(database_url, user_id=other_id)
 
     engine = create_async_engine_for_url(database_url, null_pool=True)
     try:

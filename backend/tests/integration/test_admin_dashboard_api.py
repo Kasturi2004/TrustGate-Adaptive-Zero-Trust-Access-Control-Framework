@@ -34,6 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from tests.integration.database import (
     ScratchDatabase,
     ensure_auth_user_profile,
+    ensure_verified_test_authenticator,
 )
 
 _SUPABASE_URL = "https://admin-dashboard-test.supabase.co"
@@ -101,6 +102,8 @@ async def _seed_dashboard(database_url: str) -> SeededDashboard:
         user_id=user_id,
         email=f"dashboard-user-{user_id}@integration.test",
     )
+    await ensure_verified_test_authenticator(database_url, user_id=admin_id)
+    await ensure_verified_test_authenticator(database_url, user_id=user_id)
 
     engine = create_async_engine_for_url(database_url, null_pool=True)
     try:

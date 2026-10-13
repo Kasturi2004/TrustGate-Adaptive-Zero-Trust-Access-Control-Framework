@@ -41,7 +41,11 @@ from pydantic import SecretStr
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.integration.database import ScratchDatabase, ensure_auth_user_profile
+from tests.integration.database import (
+    ScratchDatabase,
+    ensure_auth_user_profile,
+    ensure_verified_test_authenticator,
+)
 
 _SUPABASE_URL = "https://acme-monitoring-test.supabase.co"
 _TEST_PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
@@ -94,6 +98,7 @@ def test_acme_access_is_redeemed_and_visible_in_admin_event_feed(
             email=f"acme-admin-{admin_id}@integration.test",
         )
     )
+    asyncio.run(ensure_verified_test_authenticator(migrated_test_database.url, user_id=admin_id))
 
     now = datetime.now(UTC).replace(microsecond=0)
     settings = Settings(
@@ -364,6 +369,8 @@ def test_acme_document_rules_mfa_redemption_and_admin_event_chain(
                 email=f"{label}-{user_id}@integration.test",
             )
         )
+    asyncio.run(ensure_verified_test_authenticator(migrated_test_database.url, user_id=admin_id))
+    asyncio.run(ensure_verified_test_authenticator(migrated_test_database.url, user_id=other_id))
 
     now = datetime.now(UTC).replace(microsecond=0)
     settings = Settings(

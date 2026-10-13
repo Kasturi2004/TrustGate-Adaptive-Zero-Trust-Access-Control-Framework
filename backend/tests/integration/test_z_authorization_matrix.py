@@ -252,6 +252,7 @@ async def _new_user(matrix: AuthorizationMatrix, label: str) -> UUID:
         user_id=user_id,
         email=f"matrix-{label}-{user_id}@integration.test",
     )
+    await matrix.add_enabled_totp(user_id)
     return user_id
 
 
@@ -355,8 +356,6 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
     matrix = authorization_matrix
     owner_id = asyncio.run(_new_user(matrix, "stepup-owner"))
     other_id = asyncio.run(_new_user(matrix, "stepup-other"))
-    asyncio.run(matrix.add_enabled_totp(owner_id))
-    asyncio.run(matrix.add_enabled_totp(other_id))
     asyncio.run(matrix.prepare_context(owner_id))
     asyncio.run(matrix.prepare_context(other_id))
 

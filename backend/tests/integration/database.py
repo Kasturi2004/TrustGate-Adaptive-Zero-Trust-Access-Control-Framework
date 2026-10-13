@@ -1,17 +1,24 @@
 """Explicitly configured disposable PostgreSQL test database helpers."""
 
 import asyncio
+import base64
 import os
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Mapping
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypeVar
 from uuid import UUID
 
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from app.core.config import Settings
+from app.core.mfa_secrets import encrypt_totp_secret
+from app.db.models.mfa_credential import MfaCredential
+from app.db.models.profile import Profile
 from app.db.session import create_async_engine_for_url
+from pydantic import SecretStr
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +28,14 @@ _ALLOWED_TEST_HOSTS = {"localhost", "127.0.0.1", "::1", "postgres"}
 _REQUIRED_TEST_DATABASE = "trustgate_test"
 T = TypeVar("T")
 SessionOperation = Callable[[AsyncSession], Awaitable[T]]
+_TEST_TOTP_SECRET = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+_TEST_TOTP_SETTINGS = Settings(
+    app_env="test",
+    cors_allowed_origin="http://localhost",
+    totp_secret_encryption_key=SecretStr(
+        base64.urlsafe_b64encode(b"trustgate-test-totp-key-32bytes!").decode("ascii")
+    ),
+)
 
 
 def repository_migration_head() -> str:
@@ -57,6 +72,39 @@ async def ensure_auth_user_profile(
                 ),
                 {"id": user_id, "email": email},
             )
+    finally:
+        await engine.dispose()
+
+
+async def ensure_verified_test_authenticator(
+    test_database_url: str,
+    *,
+    user_id: UUID,
+) -> None:
+    """Complete test-user TOTP enrollment while keeping the onboarding guard active."""
+    engine = create_async_engine_for_url(test_database_url, null_pool=True)
+    try:
+        async with AsyncSession(engine) as session, session.begin():
+            profile = await session.get(Profile, user_id)
+            if profile is None:
+                raise ValueError("A test profile must exist before TOTP enrollment")
+            profile.authenticator_required = True
+            credential = await session.get(MfaCredential, user_id)
+            if credential is None:
+                session.add(
+                    MfaCredential(
+                        user_id=user_id,
+                        secret_ciphertext=encrypt_totp_secret(
+                            _TEST_TOTP_SECRET,
+                            settings=_TEST_TOTP_SETTINGS,
+                        ),
+                        verified_at=datetime.now(UTC),
+                        enabled=True,
+                    )
+                )
+            else:
+                credential.enabled = True
+                credential.verified_at = credential.verified_at or datetime.now(UTC)
     finally:
         await engine.dispose()
 
