@@ -2,12 +2,13 @@
 
 from asyncio import run
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Callable, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 from app.db.repositories.access_request import AccessRequestRepository
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import Dialect
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -89,6 +90,7 @@ def test_resource_redemption_query_binds_the_requested_resource_id() -> None:
 
     assert consumed is False
     statement: Any = session.execute.await_args.args[0]
-    compiled = statement.compile(dialect=postgresql.dialect())
+    dialect_factory = cast(Callable[..., Dialect], postgresql.dialect)
+    compiled = statement.compile(dialect=dialect_factory())
     assert "public.access_requests.resource_id" in str(compiled)
     assert "employee-handbook" in compiled.params.values()

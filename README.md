@@ -155,11 +155,21 @@ npm run dev -- --host 127.0.0.1
 
 The Vite server runs at `http://127.0.0.1:5173`. The frontend reads `VITE_API_BASE_URL`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` from the repository-root `.env`; only the Supabase URL and anon key are public browser settings. Keep database URLs, JWT secrets, and other backend credentials server-side.
 
+bVoir Technology Employee Portal (independent app in `demo-company/`):
+
+```powershell
+cd demo-company
+npm ci
+npm run dev
+```
+
+The portal runs at `http://127.0.0.1:5174` and proxies `/api` to `VITE_API_BASE_URL` from the repository-root `.env`, so the admin UI and portal can use the backend together. See [demo-company/README.md](demo-company/README.md) for its integration boundaries and demo data notes.
+
 ## 12. Database and Migrations
 
 The backend uses an asynchronous SQLAlchemy engine and PostgreSQL. Set `DATABASE_URL` to the application database connection. Set `MIGRATION_DATABASE_URL` when Alembic needs a separate migration-owner connection; otherwise migrations use `DATABASE_URL`. Keep both URLs server-side and use the direct PostgreSQL connection for development where appropriate.
 
-Alembic revisions in `backend/alembic/versions/` are ordered by their `down_revision` chain. They cover the initial schema, runtime privileges and RLS, profile triggers, append-only security-event protection, the initial policy seed, MFA credentials, and later access-request consumption/session-binding changes. To inspect and apply migrations, run from `backend/`:
+Alembic revisions in `backend/alembic/versions/` are ordered by their `down_revision` chain. They cover the initial schema, runtime privileges and RLS, profile triggers, append-only security-event protection, the initial policy seed, MFA credentials, access-request consumption/session binding, and authenticator onboarding for new profiles. To inspect and apply migrations, run from `backend/`:
 
 ```powershell
 .\.venv\Scripts\python -m alembic current

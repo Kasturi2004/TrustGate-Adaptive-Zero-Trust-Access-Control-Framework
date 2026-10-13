@@ -18,6 +18,8 @@ from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.core.rate_limit import account_rate_limit_key, ip_rate_limit_key
 from app.db.repositories.mfa_credential import MfaCredentialRepository
+from app.db.models.profile import Profile
+from app.db.repositories.profile import ProfileRepository
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.services.security_events import email_identifier, record_event
 
@@ -309,6 +311,23 @@ async def signup(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=_UPSTREAM_FAILURE,
         ) from None
+
+    async with session.begin():
+        repository = ProfileRepository(session)
+        profile = await repository.get_by_id(user_id)
+        if profile is None:
+            session.add(
+                Profile(
+                    id=user_id,
+                    email=user_email,
+                    role="USER",
+                    authenticator_required=True,
+                )
+            )
+        else:
+            profile.email = user_email
+            profile.role = "USER"
+            profile.authenticator_required = True
 
     return SignupResponse(
         session_created=bool(access_token),
