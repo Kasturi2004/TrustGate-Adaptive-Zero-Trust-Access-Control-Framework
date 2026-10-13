@@ -90,7 +90,7 @@ def test_resource_redemption_query_binds_the_requested_resource_id() -> None:
 
     assert consumed is False
     statement: Any = session.execute.await_args.args[0]
-    dialect_factory = cast(Callable[..., Dialect], postgresql.dialect)
+    dialect_factory = cast(Callable[[], Dialect], postgresql.dialect)
     compiled = statement.compile(dialect=dialect_factory())
     assert "public.access_requests.resource_id" in str(compiled)
     assert "employee-handbook" in compiled.params.values()

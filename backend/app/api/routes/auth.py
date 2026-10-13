@@ -313,8 +313,8 @@ async def signup(
         ) from None
 
     async with session.begin():
-        repository = ProfileRepository(session)
-        profile = await repository.get_by_id(user_id)
+        profile_repository = ProfileRepository(session)
+        profile = await profile_repository.get_by_id(user_id)
         if profile is None:
             session.add(
                 Profile(
