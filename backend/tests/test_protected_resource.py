@@ -1,8 +1,9 @@
 """Focused tests for atomic one-time protected resource authorization."""
 
 from asyncio import run
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Callable, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 

@@ -17,8 +17,8 @@ from app.core.clock import Clock
 from app.core.config import get_settings
 from app.core.limiter import limiter
 from app.core.rate_limit import account_rate_limit_key, ip_rate_limit_key
-from app.db.repositories.mfa_credential import MfaCredentialRepository
 from app.db.models.profile import Profile
+from app.db.repositories.mfa_credential import MfaCredentialRepository
 from app.db.repositories.profile import ProfileRepository
 from app.db.repositories.rate_limit_state import RateLimitStateRepository
 from app.services.security_events import email_identifier, record_event
