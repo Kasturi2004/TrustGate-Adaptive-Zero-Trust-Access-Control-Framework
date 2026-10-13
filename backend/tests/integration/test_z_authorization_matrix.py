@@ -11,7 +11,9 @@ from zoneinfo import ZoneInfo
 import jwt
 import pyotp
 import pytest
+from app.api.deps import get_clock
 from app.core import jwt as jwt_module
+from app.core.clock import FixedClock
 from app.core.config import Settings, get_settings
 from app.core.mfa_secrets import encrypt_totp_secret
 from app.db.models import Base
@@ -358,6 +360,11 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
     asyncio.run(matrix.prepare_context(owner_id))
     asyncio.run(matrix.prepare_context(other_id))
 
+    verification_time = datetime.now(UTC)
+    matrix.app.dependency_overrides[get_clock] = lambda: FixedClock(verification_time)
+    valid_code = pyotp.TOTP(_TOTP_SECRET).at(verification_time)
+    invalid_code = "000000" if valid_code != "000000" else "000001"
+
     matrix.decision = "STEP_UP"
     result = _evaluate(matrix, owner_id)
     assert result["decision"] == "STEP_UP"
@@ -369,7 +376,7 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
         "/auth/mfa/totp/step-up/verify",
         json={
             "mfa_challenge_id": str(challenge_id),
-            "code": pyotp.TOTP(_TOTP_SECRET).now(),
+            "code": valid_code,
         },
         headers=matrix.headers(other_id),
     )
@@ -378,7 +385,7 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
         "/auth/mfa/totp/step-up/verify",
         json={
             "mfa_challenge_id": str(challenge_id),
-            "code": pyotp.TOTP(_TOTP_SECRET).now(),
+            "code": valid_code,
         },
         headers=matrix.headers(owner_id, token=matrix.token(owner_id, session_id=uuid4())),
     )
@@ -386,7 +393,7 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
     assert asyncio.run(matrix.access_request(request_id)).final_outcome is None
     wrong_code = matrix.client.post(
         "/auth/mfa/totp/step-up/verify",
-        json={"mfa_challenge_id": str(challenge_id), "code": "000000"},
+        json={"mfa_challenge_id": str(challenge_id), "code": invalid_code},
         headers=matrix.headers(owner_id),
     )
     assert wrong_code.status_code == 400
@@ -395,7 +402,7 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
         "/auth/mfa/totp/step-up/verify",
         json={
             "mfa_challenge_id": str(challenge_id),
-            "code": pyotp.TOTP(_TOTP_SECRET).now(),
+            "code": valid_code,
         },
         headers=matrix.headers(owner_id),
     )
@@ -415,7 +422,7 @@ def test_step_up_requires_same_request_totp_and_cannot_authorize_another_request
         "/auth/mfa/totp/step-up/verify",
         json={
             "mfa_challenge_id": str(challenge_id),
-            "code": pyotp.TOTP(_TOTP_SECRET).now(),
+            "code": valid_code,
         },
         headers=matrix.headers(owner_id),
     )

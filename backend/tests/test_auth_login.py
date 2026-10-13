@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _ORIGIN = "http://localhost:5173"
 _PASSWORD = "test-password-never-log"
+_SIGNUP_PASSWORD = "Signup-password-123!"
 _ACCESS_TOKEN = "test-access-token-never-log"
 _REFRESH_TOKEN = "test-refresh-token-never-log"
 _OTP = "test-otp-never-store"
@@ -200,6 +202,152 @@ def test_valid_credentials_are_proxied_and_token_response_is_relayed(
         "Content-Type": "application/json",
     }
     assert kwargs["json"] == {"email": "user@example.test", "password": _PASSWORD}
+
+
+def test_signup_creates_an_employee_session_without_accepting_a_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user_id = _LOGIN_USER_ID
+    body = json.dumps(
+        {
+            "access_token": _ACCESS_TOKEN,
+            "refresh_token": _REFRESH_TOKEN,
+            "token_type": "bearer",
+            "expires_in": 3600,
+            "user": {
+                "id": user_id,
+                "email": "employee@example.test",
+                "app_metadata": {"role": "ADMIN"},
+            },
+        }
+    ).encode()
+    mock_client = _MockClient(_upstream_response(200, body))
+    client = _client(monkeypatch, mock_client)
+
+    response = client.post(
+        "/auth/signup",
+        json={
+            "full_name": "  Employee   Example ",
+            "email": "Employee@Example.test ",
+            "password": _SIGNUP_PASSWORD,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json() == {
+        "account_created": True,
+        "session_created": True,
+        "access_token": _ACCESS_TOKEN,
+        "refresh_token": _REFRESH_TOKEN,
+        "token_type": "bearer",
+        "expires_in": 3600,
+        "user": {"id": user_id, "email": "employee@example.test"},
+    }
+    call = mock_client.post.await_args
+    assert call is not None
+    args, kwargs = call
+    assert args == ("https://project.example.test/auth/v1/signup",)
+    assert kwargs["json"] == {
+        "email": "employee@example.test",
+        "password": _SIGNUP_PASSWORD,
+        "data": {"full_name": "Employee Example"},
+    }
+    assert "role" not in kwargs["json"]
+    assert "app_metadata" not in response.text
+
+
+def test_signup_rejects_client_supplied_role_and_short_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mock_client = _MockClient(_upstream_response(200, _VALID_UPSTREAM_RESPONSE))
+    client = _client(monkeypatch, mock_client)
+
+    with_role = client.post(
+        "/auth/signup",
+        json={
+            "full_name": "Employee Example",
+            "email": "employee@example.test",
+            "password": _SIGNUP_PASSWORD,
+            "role": "ADMIN",
+        },
+    )
+    short_password = client.post(
+        "/auth/signup",
+        json={
+            "full_name": "Employee Example",
+            "email": "employee@example.test",
+            "password": "short",
+        },
+    )
+    weak_passwords = [
+        "alllowercasepassword123!",
+        "ALLUPPERCASEPASSWORD123!",
+        "NoNumberPasswordHere!",
+        "NoSymbolPassword123",
+    ]
+    weak_responses = [
+        client.post(
+            "/auth/signup",
+            json={
+                "full_name": "Employee Example",
+                "email": "employee@example.test",
+                "password": password,
+            },
+        )
+        for password in weak_passwords
+    ]
+
+    assert with_role.status_code == 422
+    assert short_password.status_code == 422
+    assert all(response.status_code == 422 for response in weak_responses)
+    mock_client.post.assert_not_awaited()
+
+
+def test_signup_duplicate_account_failure_is_generic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret_message = "employee already exists; password metadata is private"
+    client = _client(
+        monkeypatch,
+        _MockClient(_upstream_response(422, f'{{"msg":"{secret_message}"}}'.encode())),
+    )
+
+    response = client.post(
+        "/auth/signup",
+        json={
+            "full_name": "Employee Example",
+            "email": "employee@example.test",
+            "password": _SIGNUP_PASSWORD,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["message"] == (
+        "Unable to create account. Check the details or sign in."
+    )
+    assert secret_message not in response.text
+    assert _SIGNUP_PASSWORD not in response.text
+
+
+def test_signup_confirmation_required_response_does_not_fabricate_a_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = f'{{"user":{{"id":"{_LOGIN_USER_ID}","email":"employee@example.test"}}}}'.encode()
+    client = _client(monkeypatch, _MockClient(_upstream_response(200, body)))
+
+    response = client.post(
+        "/auth/signup",
+        json={
+            "full_name": "Employee Example",
+            "email": "employee@example.test",
+            "password": _SIGNUP_PASSWORD,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["session_created"] is False
+    assert response.json()["access_token"] is None
+    assert response.json()["refresh_token"] is None
 
 
 def test_successful_login_records_redacted_security_event(

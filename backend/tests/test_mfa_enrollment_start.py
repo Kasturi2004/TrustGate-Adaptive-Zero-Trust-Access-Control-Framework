@@ -140,7 +140,7 @@ def test_authenticated_user_starts_enrollment_without_selecting_user(
     session.begin_nested.assert_not_called()
 
 
-def test_repeated_start_replaces_only_pending_credential(
+def test_repeated_start_reuses_only_pending_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     previous_secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
@@ -151,6 +151,7 @@ def test_repeated_start_replaces_only_pending_credential(
         enabled=False,
         last_accepted_time_step=123,
     )
+    original_ciphertext = existing.secret_ciphertext
     session = _session(credential=existing)
     client = _client(session, monkeypatch)
 
@@ -158,14 +159,14 @@ def test_repeated_start_replaces_only_pending_credential(
 
     assert response.status_code == 200
     new_secret = response.json()["manual_entry_key"]
-    assert new_secret != previous_secret
-    assert existing.secret_ciphertext != encrypt_totp_secret(previous_secret, settings=_settings())
-    assert decrypt_totp_secret(existing.secret_ciphertext, settings=_settings()) == new_secret
+    assert new_secret == previous_secret
+    assert existing.secret_ciphertext == original_ciphertext
+    assert decrypt_totp_secret(existing.secret_ciphertext, settings=_settings()) == previous_secret
     assert existing.verified_at is None
     assert existing.enabled is False
-    assert existing.last_accepted_time_step is None
+    assert existing.last_accepted_time_step == 123
     assert _mfa_records(session) == []
-    assert len(_security_events(session)) == 1
+    assert _security_events(session) == []
     session.commit.assert_awaited_once()
 
 

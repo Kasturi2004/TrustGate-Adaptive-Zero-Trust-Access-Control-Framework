@@ -6,7 +6,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_user
+from app.api.deps import (
+    AuthenticatedPrincipal,
+    get_clock,
+    get_db_session,
+    require_onboarded_user,
+)
 from app.core.client_ip import resolve_client_ip
 from app.core.clock import Clock
 from app.core.config import Settings, get_settings
@@ -16,7 +21,9 @@ from app.db.repositories.profile import ProfileRepository
 from app.schemas.access import (
     AccessEvaluateRequest,
     AccessEvaluateResponse,
+    DocumentResourceId,
     ProtectedDashboardResponse,
+    ProtectedDocumentResponse,
     ProtectedResourceRequest,
 )
 from app.schemas.admin import AdminEventInvestigation
@@ -24,7 +31,10 @@ from app.schemas.history import AccessHistoryResponse
 from app.services.access_gateway import SecurityPipeline, access_gateway, get_security_pipeline
 from app.services.admin_queries import get_admin_event_investigation
 from app.services.context.location import GeoResolver, get_geo_resolver
-from app.services.protected_resource import get_protected_resource
+from app.services.protected_resource import (
+    ProtectedResourceNotFoundError,
+    get_protected_resource,
+)
 from app.services.security_events import record_event
 
 router = APIRouter(prefix="/access", tags=["access"])
@@ -35,7 +45,7 @@ resource_router = APIRouter(prefix="/resources", tags=["protected resources"])
 async def read_operations_dashboard(
     payload: ProtectedResourceRequest,
     response: Response,
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
 ) -> ProtectedDashboardResponse:
@@ -73,9 +83,64 @@ async def read_operations_dashboard(
     )
 
 
+@resource_router.post("/{resource_id}", response_model=ProtectedDocumentResponse)
+async def read_protected_document(
+    resource_id: DocumentResourceId,
+    payload: ProtectedResourceRequest,
+    response: Response,
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    clock: Annotated[Clock, Depends(get_clock)],
+) -> ProtectedDocumentResponse:
+    """Return a server-held sample document only after resource-bound redemption."""
+    try:
+        resource = get_protected_resource(resource_id)
+    except ProtectedResourceNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Resource not found"
+        ) from None
+    if not resource.employee_access_allowed or resource.content is None:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+
+    response.headers["Cache-Control"] = "no-store"
+    repository = AccessRequestRepository(session)
+    try:
+        consumed = await repository.consume_resource_access(
+            payload.access_request_id,
+            principal.id,
+            principal.session_id,
+            resource_id=resource.resource_id,
+            now=clock.now(),
+        )
+        if not consumed:
+            await session.rollback()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+        record_event(
+            session,
+            event_type="PROTECTED_RESOURCE_ACCESSED",
+            actor_id=principal.id,
+            access_request_id=payload.access_request_id,
+            decision="ALLOW",
+        )
+        await session.commit()
+    except HTTPException:
+        raise
+    except Exception:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred.",
+        ) from None
+    return ProtectedDocumentResponse(
+        resource_id=resource_id,
+        title=resource.name,
+        content=resource.content,
+    )
+
+
 @router.get("/history", response_model=list[AccessHistoryResponse])
 async def read_access_history(
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     page: Annotated[int, Query(ge=1)],
     page_size: Annotated[int, Query(ge=1)],
@@ -107,7 +172,7 @@ async def read_access_history(
 async def read_access_request(
     access_request_id: UUID,
     request: Request,
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -166,7 +231,7 @@ async def evaluate_access(
     request: Request,
     payload: AccessEvaluateRequest,
     device_token: Annotated[str, Header(alias="X-Device-Token", min_length=1)],
-    _principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    _principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
     pipeline: Annotated[SecurityPipeline, Depends(get_security_pipeline)],

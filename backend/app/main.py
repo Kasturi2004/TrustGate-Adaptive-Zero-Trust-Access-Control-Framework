@@ -1,5 +1,8 @@
 """TrustGate API entrypoint."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from slowapi.errors import RateLimitExceeded
@@ -20,6 +23,18 @@ from app.core.errors import (
 from app.core.limiter import limiter
 
 
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Dispose pooled database engines while their event loop is still running."""
+    if not hasattr(app.state, "db_engine"):
+        app.state.db_engine = None
+    yield
+    engine = getattr(app.state, "db_engine", None)
+    if engine is not None:
+        await engine.dispose()
+        app.state.db_engine = None
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the FastAPI application. OpenAPI is disabled in production."""
     resolved = settings if settings is not None else get_settings()
@@ -28,6 +43,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="TrustGate",
         version="0.1.0",
         debug=False,
+        lifespan=_app_lifespan,
         docs_url="/docs" if docs_enabled else None,
         redoc_url="/redoc" if docs_enabled else None,
         openapi_url="/openapi.json" if docs_enabled else None,

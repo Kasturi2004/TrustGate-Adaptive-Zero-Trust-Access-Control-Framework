@@ -85,7 +85,7 @@ def test_valid_authenticated_request_returns_profile_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = AsyncMock(spec=AsyncSession)
-    session.get.return_value = _profile(role="USER")
+    session.get.side_effect = [_profile(role="USER"), None]
     client = _client(session, monkeypatch)
 
     response = client.get("/auth/me", headers={"Authorization": f"Bearer {_token()}"})
@@ -95,14 +95,23 @@ def test_valid_authenticated_request_returns_profile_identity(
         "id": str(_USER_ID),
         "email": "user@example.test",
         "role": "USER",
+        "authenticator_required": False,
+        "mfa_enrolled": False,
     }
-    assert set(response.json()) == {"id", "email", "role"}
-    session.get.assert_awaited_once_with(Profile, _USER_ID)
+    assert set(response.json()) == {
+        "id",
+        "email",
+        "role",
+        "authenticator_required",
+        "mfa_enrolled",
+    }
+    assert session.get.await_args_list[0].args == (Profile, _USER_ID)
+    assert session.get.await_args_list[1].args[1] == _USER_ID
 
 
 def test_profile_role_is_used_instead_of_jwt_role(monkeypatch: pytest.MonkeyPatch) -> None:
     session = AsyncMock(spec=AsyncSession)
-    session.get.return_value = _profile(role="USER")
+    session.get.side_effect = [_profile(role="USER"), None]
     client = _client(session, monkeypatch)
 
     response = client.get(
@@ -149,7 +158,7 @@ def test_supabase_hs256_access_token_resolves_the_database_profile_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = AsyncMock(spec=AsyncSession)
-    session.get.return_value = _profile(role="ADMIN")
+    session.get.side_effect = [_profile(role="ADMIN"), None]
     client = _client(session, monkeypatch)
     token = jwt.encode(
         {
@@ -168,7 +177,8 @@ def test_supabase_hs256_access_token_resolves_the_database_profile_role(
 
     assert response.status_code == 200
     assert response.json()["role"] == "ADMIN"
-    session.get.assert_awaited_once_with(Profile, _USER_ID)
+    assert session.get.await_args_list[0].args == (Profile, _USER_ID)
+    assert session.get.await_args_list[1].args[1] == _USER_ID
 
 
 def test_malformed_issued_at_claim_logs_only_its_failure_category(
@@ -219,7 +229,7 @@ def test_client_supplied_user_id_does_not_change_authenticated_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     session = AsyncMock(spec=AsyncSession)
-    session.get.return_value = _profile()
+    session.get.side_effect = [_profile(), None]
     client = _client(session, monkeypatch)
 
     response = client.get(
@@ -229,4 +239,5 @@ def test_client_supplied_user_id_does_not_change_authenticated_identity(
 
     assert response.status_code == 200
     assert response.json()["id"] == str(_USER_ID)
-    session.get.assert_awaited_once_with(Profile, _USER_ID)
+    assert session.get.await_args_list[0].args == (Profile, _USER_ID)
+    assert session.get.await_args_list[1].args[1] == _USER_ID

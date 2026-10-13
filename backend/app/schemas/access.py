@@ -6,6 +6,12 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict
 
 AccessDecision = Literal["ALLOW", "STEP_UP", "BLOCK"]
+DocumentResourceId = Literal[
+    "employee-handbook",
+    "company-policies",
+    "quarterly-strategy-plan",
+    "confidential-financial-report",
+]
 
 
 class AccessEvaluateRequest(BaseModel):
@@ -13,7 +19,13 @@ class AccessEvaluateRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    resource_id: Literal["ops-dashboard"] = "ops-dashboard"
+    resource_id: Literal[
+        "ops-dashboard",
+        "employee-handbook",
+        "company-policies",
+        "quarterly-strategy-plan",
+        "confidential-financial-report",
+    ] = "ops-dashboard"
 
 
 class AccessEvaluateResponse(BaseModel):
@@ -39,3 +51,11 @@ class ProtectedDashboardResponse(BaseModel):
     title: str
     summary: str
     status: Literal["operational"]
+
+
+class ProtectedDocumentResponse(BaseModel):
+    """Fictional document body returned only by successful protected redemption."""
+
+    resource_id: DocumentResourceId
+    title: str
+    content: str

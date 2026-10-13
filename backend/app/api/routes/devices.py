@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_user
+from app.api.deps import AuthenticatedPrincipal, get_clock, get_db_session, require_onboarded_user
 from app.core.clock import Clock
 from app.core.config import Settings, get_settings
 from app.db.repositories.device import DeviceRepository
@@ -29,7 +29,7 @@ def _current_device_hash(device_token: str, settings: Settings) -> str:
 @router.get("/current", response_model=DeviceRecognitionStatus)
 async def get_current_device_status(
     response: Response,
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     device_token: Annotated[str, Header(alias="X-Device-Token", min_length=1)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[Settings, Depends(get_settings)],
@@ -52,7 +52,7 @@ async def get_current_device_status(
 async def recognize_current_device(
     payload: DeviceRecognitionRequest,
     response: Response,
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     device_token: Annotated[str, Header(alias="X-Device-Token", min_length=1)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     clock: Annotated[Clock, Depends(get_clock)],
@@ -87,7 +87,7 @@ async def recognize_current_device(
 @router.delete("/current/recognition", response_model=DeviceRecognitionStatus)
 async def forget_current_device(
     response: Response,
-    principal: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    principal: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     device_token: Annotated[str, Header(alias="X-Device-Token", min_length=1)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[Settings, Depends(get_settings)],

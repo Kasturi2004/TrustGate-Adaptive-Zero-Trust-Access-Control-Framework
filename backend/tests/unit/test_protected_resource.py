@@ -12,8 +12,14 @@ from app.services.protected_resource import (
 )
 
 
-def test_registry_contains_only_ops_dashboard() -> None:
-    assert tuple(PROTECTED_RESOURCES) == ("ops-dashboard",)
+def test_registry_contains_ops_dashboard_and_acme_documents() -> None:
+    assert tuple(PROTECTED_RESOURCES) == (
+        "ops-dashboard",
+        "employee-handbook",
+        "company-policies",
+        "quarterly-strategy-plan",
+        "confidential-financial-report",
+    )
 
 
 def test_ops_dashboard_has_server_owned_metadata() -> None:
@@ -22,6 +28,7 @@ def test_ops_dashboard_has_server_owned_metadata() -> None:
     assert resource.resource_id == "ops-dashboard"
     assert resource.name == "Operations Dashboard"
     assert resource.description == "The TrustGate operations dashboard protected resource."
+    assert resource.employee_access_allowed is True
 
 
 def test_lookup_returns_the_registered_resource() -> None:
@@ -44,3 +51,19 @@ def test_registry_and_returned_resource_cannot_be_mutated() -> None:
 
     with pytest.raises(FrozenInstanceError):
         resource.name = "Changed by caller"  # type: ignore[misc]
+
+
+def test_document_entitlements_are_server_owned_and_fail_closed() -> None:
+    handbook = get_protected_resource("employee-handbook")
+    policies = get_protected_resource("company-policies")
+    strategy = get_protected_resource("quarterly-strategy-plan")
+    financial = get_protected_resource("confidential-financial-report")
+
+    assert handbook.employee_access_allowed is True
+    assert handbook.content is not None and "FICTIONAL SAMPLE" in handbook.content
+    assert policies.employee_access_allowed is True
+    assert policies.content is not None and "FICTIONAL SAMPLE" in policies.content
+    assert strategy.employee_access_allowed is False
+    assert strategy.content is None
+    assert financial.employee_access_allowed is False
+    assert financial.content is None

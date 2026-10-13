@@ -37,7 +37,7 @@ def _utc_bound(value: datetime, name: str) -> datetime:
     """Require an offset-aware timestamp and normalize it to UTC."""
     if value.tzinfo is None or value.utcoffset() is None:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"{name} must include a UTC offset",
         )
     return value.astimezone(UTC)
@@ -58,7 +58,7 @@ async def read_admin_dashboard(
     to_utc = _utc_bound(to_, "to")
     if from_utc > to_utc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="from must not be later than to",
         )
 
@@ -116,7 +116,7 @@ async def read_admin_security_events(
     to_utc = _utc_bound(to_, "to") if to_ is not None else None
     if from_utc is not None and to_utc is not None and from_utc > to_utc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="from must not be later than to",
         )
 

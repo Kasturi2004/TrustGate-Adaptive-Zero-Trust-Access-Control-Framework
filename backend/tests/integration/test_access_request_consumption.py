@@ -81,6 +81,41 @@ def test_dashboard_approval_is_consumed_once_with_database_enforced_mfa(
                 approved.id, user_id, _SESSION_1, now
             )
 
+            handbook = AccessRequest(
+                user_id=user_id,
+                auth_session_id=_SESSION_1,
+                device_id=device.id,
+                resource_id="employee-handbook",
+                source_ip=IPv4Address("192.0.2.45"),
+                initial_decision="ALLOW",
+                final_outcome="ALLOW",
+                requested_at=now,
+            )
+            session.add(handbook)
+            await session.flush()
+            assert not await repository.consume_resource_access(
+                handbook.id,
+                user_id,
+                _SESSION_1,
+                resource_id="company-policies",
+                now=now,
+            )
+            assert handbook.consumed_at is None
+            assert await repository.consume_resource_access(
+                handbook.id,
+                user_id,
+                _SESSION_1,
+                resource_id="employee-handbook",
+                now=now,
+            )
+            assert not await repository.consume_resource_access(
+                handbook.id,
+                user_id,
+                _SESSION_1,
+                resource_id="employee-handbook",
+                now=now,
+            )
+
             fresh_session_2_request = AccessRequest(
                 user_id=user_id,
                 auth_session_id=_SESSION_2,
@@ -157,63 +192,64 @@ def test_concurrent_dashboard_redemption_has_exactly_one_winner(
             email=email,
         )
     )
-    engine = create_async_engine_for_url(migrated_test_database.url)
     now = datetime(2026, 10, 8, 12, 0, tzinfo=UTC)
 
     async def exercise() -> None:
-        async with AsyncSession(engine) as session, session.begin():
-            device = Device(user_id=user_id, device_hash=f"concurrent-consumption-{user_id}")
-            session.add(device)
-            await session.flush()
-            request = AccessRequest(
-                user_id=user_id,
-                auth_session_id=_SESSION_1,
-                device_id=device.id,
-                resource_id="ops-dashboard",
-                source_ip=IPv4Address("192.0.2.43"),
-                initial_decision="ALLOW",
-                final_outcome="ALLOW",
-                requested_at=now,
-            )
-            session.add(request)
-            await session.flush()
-            assert request.consumed_at is None
-            request_id = request.id
-
-        async def redeem() -> bool:
+        engine = create_async_engine_for_url(migrated_test_database.url)
+        try:
             async with AsyncSession(engine) as session, session.begin():
-                return await AccessRequestRepository(session).consume_dashboard_access(
-                    request_id, user_id, _SESSION_1, now
+                device = Device(user_id=user_id, device_hash=f"concurrent-consumption-{user_id}")
+                session.add(device)
+                await session.flush()
+                request = AccessRequest(
+                    user_id=user_id,
+                    auth_session_id=_SESSION_1,
+                    device_id=device.id,
+                    resource_id="ops-dashboard",
+                    source_ip=IPv4Address("192.0.2.43"),
+                    initial_decision="ALLOW",
+                    final_outcome="ALLOW",
+                    requested_at=now,
+                )
+                session.add(request)
+                await session.flush()
+                assert request.consumed_at is None
+                request_id = request.id
+
+            async def redeem() -> bool:
+                async with AsyncSession(engine) as session, session.begin():
+                    return await AccessRequestRepository(session).consume_dashboard_access(
+                        request_id, user_id, _SESSION_1, now
+                    )
+
+            outcomes = await asyncio.gather(redeem(), redeem())
+            assert sorted(outcomes) == [False, True]
+            assert not await redeem()
+
+            async with AsyncSession(engine) as session:
+                consumed_request = await session.get(AccessRequest, request_id)
+                assert consumed_request is not None
+                assert consumed_request.consumed_at == now
+        finally:
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+    cleanup_engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
+    try:
+
+        async def remove_committed_request_and_device() -> None:
+            async with cleanup_engine.begin() as connection:
+                await connection.execute(
+                    text("DELETE FROM public.access_requests WHERE user_id = :user_id"),
+                    {"user_id": user_id},
+                )
+                await connection.execute(
+                    text("DELETE FROM public.devices WHERE user_id = :user_id"),
+                    {"user_id": user_id},
                 )
 
-        outcomes = await asyncio.gather(redeem(), redeem())
-        assert sorted(outcomes) == [False, True]
-        assert not await redeem()
-
-        async with AsyncSession(engine) as session:
-            consumed_request = await session.get(AccessRequest, request_id)
-            assert consumed_request is not None
-            assert consumed_request.consumed_at == now
-
-    try:
-        asyncio.run(exercise())
+        asyncio.run(remove_committed_request_and_device())
     finally:
-        asyncio.run(engine.dispose())
-        cleanup_engine = create_async_engine_for_url(migrated_test_database.url, null_pool=True)
-        try:
-
-            async def remove_committed_request_and_device() -> None:
-                async with cleanup_engine.begin() as connection:
-                    await connection.execute(
-                        text("DELETE FROM public.access_requests WHERE user_id = :user_id"),
-                        {"user_id": user_id},
-                    )
-                    await connection.execute(
-                        text("DELETE FROM public.devices WHERE user_id = :user_id"),
-                        {"user_id": user_id},
-                    )
-
-            asyncio.run(remove_committed_request_and_device())
-        finally:
-            asyncio.run(cleanup_engine.dispose())
-        asyncio.run(remove_auth_user_profile(migrated_test_database.url, user_id=user_id))
+        asyncio.run(cleanup_engine.dispose())
+    asyncio.run(remove_auth_user_profile(migrated_test_database.url, user_id=user_id))

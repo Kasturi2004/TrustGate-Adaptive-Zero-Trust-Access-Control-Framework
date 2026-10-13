@@ -70,3 +70,25 @@ def test_second_redemption_of_the_same_approval_is_rejected() -> None:
     assert first is True
     assert second is False
     assert session.execute.await_count == 2
+
+
+def test_resource_redemption_query_binds_the_requested_resource_id() -> None:
+    session = AsyncMock(spec=AsyncSession)
+    session.execute.return_value = Mock(scalar_one_or_none=Mock(return_value=None))
+    repository = AccessRequestRepository(cast(AsyncSession, session))
+
+    consumed = run(
+        repository.consume_resource_access(
+            uuid4(),
+            uuid4(),
+            UUID(int=1),
+            resource_id="employee-handbook",
+            now=datetime(2026, 10, 8, tzinfo=UTC),
+        )
+    )
+
+    assert consumed is False
+    statement: Any = session.execute.await_args.args[0]
+    compiled = statement.compile(dialect=postgresql.dialect())
+    assert "public.access_requests.resource_id" in str(compiled)
+    assert "employee-handbook" in compiled.params.values()

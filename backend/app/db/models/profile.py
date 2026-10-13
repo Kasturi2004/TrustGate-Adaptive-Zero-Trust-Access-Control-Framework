@@ -24,6 +24,9 @@ class Profile(Base):
     )
     email: Mapped[str | None] = mapped_column(Text, nullable=True)
     role: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'USER'"))
+    authenticator_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     timezone: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'UTC'"))
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(

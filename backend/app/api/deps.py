@@ -14,6 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from app.core.clock import Clock, SystemClock
 from app.core.config import get_settings
 from app.core.jwt import AuthenticatedUser, InvalidJWTError, validate_access_token
+from app.db.repositories.mfa_credential import MfaCredentialRepository
 from app.db.repositories.profile import ProfileRepository
 from app.db.session import create_db_engine, create_session_factory
 from app.services.security_events import record_event
@@ -42,6 +43,7 @@ class AuthenticatedPrincipal:
     email: str | None
     role: str
     session_id: UUID
+    authenticator_required: bool = False
 
 
 def _not_authenticated() -> HTTPException:
@@ -70,15 +72,34 @@ async def get_verified_identity(
         raise _not_authenticated() from None
 
 
-async def get_db_session() -> AsyncIterator[AsyncSession]:
-    """Yield a request-owned session using the existing database configuration."""
-    engine = create_db_engine(get_settings())
-    try:
-        session_factory = create_session_factory(engine)
-        async with session_factory() as session:
-            yield session
-    finally:
-        await engine.dispose()
+async def get_db_session(
+    request: Request,
+) -> AsyncIterator[AsyncSession]:
+    """Yield a request-owned session using the existing database configuration.
+
+    Engines are cached on the application state and disposed when the
+    application shuts down.  This keeps pooled asyncpg connections inside
+    the active event loop instead of leaving them to garbage collection.
+    """
+    if request is None or getattr(request, "app", None) is None:
+        fallback_engine = create_db_engine(get_settings())
+        try:
+            session_factory = create_session_factory(fallback_engine)
+            async with session_factory() as session:
+                yield session
+        finally:
+            await fallback_engine.dispose()
+        return
+
+    app = request.app
+    cached_engine = getattr(app.state, "db_engine", None)
+    if cached_engine is None:
+        cached_engine = create_db_engine(get_settings())
+        app.state.db_engine = cached_engine
+
+    session_factory = create_session_factory(cached_engine)
+    async with session_factory() as session:
+        yield session
 
 
 async def get_current_user(
@@ -96,6 +117,7 @@ async def get_current_user(
         email=profile.email,
         role=profile.role,
         session_id=identity.session_id,
+        authenticator_required=getattr(profile, "authenticator_required", False),
     )
 
 
@@ -103,6 +125,21 @@ async def require_user(
     current_user: Annotated[AuthenticatedPrincipal, Depends(get_current_user)],
 ) -> AuthenticatedPrincipal:
     """Require a valid, non-deleted user profile for an endpoint."""
+    return current_user
+
+
+async def require_onboarded_user(
+    current_user: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> AuthenticatedPrincipal:
+    """Require new accounts to complete authenticator setup before using app APIs."""
+    if current_user.authenticator_required:
+        credential = await MfaCredentialRepository(session).get_by_user_id(current_user.id)
+        if credential is None or not credential.enabled or credential.verified_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Authenticator setup is required.",
+            )
     return current_user
 
 
@@ -187,7 +224,7 @@ def require_role(
 
     async def check_role(
         request: Request,
-        current_user: Annotated[AuthenticatedPrincipal, Depends(require_user)],
+        current_user: Annotated[AuthenticatedPrincipal, Depends(require_onboarded_user)],
     ) -> AuthenticatedPrincipal:
         if current_user.role != required_role:
             request_path = request.url.path

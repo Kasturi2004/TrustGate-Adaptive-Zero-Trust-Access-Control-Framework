@@ -180,7 +180,25 @@ class AccessRequestRepository:
     async def consume_dashboard_access(
         self, access_request_id: UUID, user_id: UUID, auth_session_id: UUID, now: datetime
     ) -> bool:
-        """Atomically consume one approved dashboard request, requiring successful MFA if needed."""
+        """Keep the legacy dashboard operation and bind it to its fixed resource ID."""
+        return await self.consume_resource_access(
+            access_request_id,
+            user_id,
+            auth_session_id,
+            resource_id="ops-dashboard",
+            now=now,
+        )
+
+    async def consume_resource_access(
+        self,
+        access_request_id: UUID,
+        user_id: UUID,
+        auth_session_id: UUID,
+        *,
+        resource_id: str,
+        now: datetime,
+    ) -> bool:
+        """Atomically consume one approved request bound to this resource and identity."""
         successful_mfa = exists(
             select(OtpChallenge.id).where(
                 OtpChallenge.access_request_id == AccessRequest.id,
@@ -195,7 +213,7 @@ class AccessRequestRepository:
                 AccessRequest.id == access_request_id,
                 AccessRequest.user_id == user_id,
                 AccessRequest.auth_session_id == auth_session_id,
-                AccessRequest.resource_id == "ops-dashboard",
+                AccessRequest.resource_id == resource_id,
                 AccessRequest.final_outcome == "ALLOW",
                 AccessRequest.consumed_at.is_(None),
                 or_(

@@ -105,13 +105,12 @@ async def start_totp_enrollment(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=_ENROLLMENT_ALREADY_ENABLED,
             )
-
-        secret = generate_totp_secret()
-        ciphertext = encrypt_totp_secret(secret)
         account_label = principal.email or str(principal.id)
-        provisioning_uri = generate_totp_provisioning_uri(secret, account_label)
-
+        is_new_enrollment = credential is None
         if credential is None:
+            secret = generate_totp_secret()
+            ciphertext = encrypt_totp_secret(secret)
+            provisioning_uri = generate_totp_provisioning_uri(secret, account_label)
             credential = MfaCredential(
                 user_id=principal.id,
                 secret_ciphertext=ciphertext,
@@ -120,18 +119,19 @@ async def start_totp_enrollment(
             )
             repository.add(credential)
         else:
-            credential.secret_ciphertext = ciphertext
-            credential.verified_at = None
-            credential.enabled = False
-            credential.last_accepted_time_step = None
+            # Repeated starts are idempotent while pending. Replacing the secret
+            # could invalidate a QR code already displayed in another tab.
+            secret = decrypt_totp_secret(credential.secret_ciphertext)
+            provisioning_uri = generate_totp_provisioning_uri(secret, account_label)
 
         await session.flush()
-        record_event(
-            session,
-            event_type="MFA_TOTP_ENROLLMENT_STARTED",
-            actor_id=principal.id,
-            details={},
-        )
+        if is_new_enrollment:
+            record_event(
+                session,
+                event_type="MFA_TOTP_ENROLLMENT_STARTED",
+                actor_id=principal.id,
+                details={},
+            )
         await session.commit()
     except HTTPException:
         raise

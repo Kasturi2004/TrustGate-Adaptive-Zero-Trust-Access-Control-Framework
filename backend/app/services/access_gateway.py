@@ -504,6 +504,13 @@ async def access_gateway(
             )
             risk_classification = classify_risk(trust_score)
             policy_decision = evaluate_policy(trust_score, policy_thresholds)
+            if not resource.employee_access_allowed:
+                policy_decision = policy_decision.model_copy(
+                    update={
+                        "decision": "BLOCK",
+                        "decision_reason": resource.denial_reason or explain_decision("BLOCK"),
+                    }
+                )
     except _MissingActivePolicyError:
         await _persist_failsafe_event(session, principal.id, rollback_first=True)
         return AccessGatewayResponse(
@@ -523,6 +530,13 @@ async def access_gateway(
                 evaluation_id=uuid4(),
                 decision="BLOCK",
                 explanation=explain_decision("BLOCK"),
+            )
+        if not resource.employee_access_allowed:
+            await _persist_failsafe_event(session, principal.id, rollback_first=True)
+            return AccessGatewayResponse(
+                evaluation_id=uuid4(),
+                decision="BLOCK",
+                explanation=resource.denial_reason or explain_decision("BLOCK"),
             )
         try:
             failsafe_evaluation_id = await _persist_step_up_failsafe(
@@ -734,7 +748,11 @@ async def access_gateway(
     return AccessGatewayResponse(
         evaluation_id=evaluation_id,
         decision=final_decision,
-        explanation=explain_decision(final_decision),
+        explanation=(
+            (resource.denial_reason or explain_decision(final_decision))
+            if not resource.employee_access_allowed
+            else explain_decision(final_decision)
+        ),
         mfa_challenge_id=mfa_challenge_id,
         access_request_id=access_request_id,
     )
